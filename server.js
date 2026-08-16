@@ -20,7 +20,10 @@ app.use(express.json());
 app.use(cookieParser());
 
 // Ensure the schema exists and seed runs once (cheap after the first call).
-app.use(async (req, res, next) => {
+// Gated to /api so the front-end still loads even if the database is momentarily
+// unreachable (the user then sees a clean error on the first API call instead of
+// a blank page).
+app.use('/api', async (req, res, next) => {
   try { await ensureReady(); next(); } catch (e) { next(e); }
 });
 
@@ -436,9 +439,12 @@ app.get('/api/deals/:id/audit', requireAuth, wrap(async (req, res) => {
   res.json((await query('SELECT * FROM audit_log WHERE deal_id=$1 ORDER BY created_at DESC, id DESC', [Number(req.params.id)])).rows);
 }));
 
-// ---------- static frontend ----------
-app.use(express.static(path.join(__dirname, 'public')));
-app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+// ---------- static frontend (flat layout: assets sit next to server.js) ----------
+app.get(['/', '/index.html'], (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.get('/app.js', (req, res) => res.sendFile(path.join(__dirname, 'app.js')));
+app.get('/styles.css', (req, res) => res.sendFile(path.join(__dirname, 'styles.css')));
+// Single-page app fallback for any non-API route.
+app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 // ---------- errors ----------
 app.use((err, req, res, next) => {
