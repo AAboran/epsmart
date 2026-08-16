@@ -101,13 +101,14 @@ function renderLogin() {
   document.getElementById('root').innerHTML = `
     <div class="login">
       <div class="login-card">
-        <h1>Europa Pharmaceutical</h1>
+        <img src="/img/europa-logo.png" alt="Europa Pharmaceutical" class="login-logo" />
         <div class="sub">Deal Control — internal sign in</div>
         <div class="field"><label for="u">Username</label><input id="u" autocomplete="username" /></div>
         <div class="field"><label for="p">Password</label><input id="p" type="password" autocomplete="current-password" /></div>
         <button class="btn primary" id="go" style="width:100%">Sign in</button>
         <div id="lerr" class="alert err hidden" style="margin-top:14px"></div>
         <div class="demo">Demo accounts — admin / admin123 · office / office123 · viewer / viewer123</div>
+        <div class="login-boran"><img src="/img/boran-coat.png" alt="" /><span>Part of the Boran&amp;Co Group</span></div>
       </div>
     </div>`;
   const submit = async () => {
@@ -139,7 +140,7 @@ function shell(title, bodyHtml, actionsHtml = '') {
     <div class="app">
       <div class="scrim hidden" id="scrim"></div>
       <aside class="sidebar" id="sidebar">
-        <div class="brand">Europa Pharmaceutical<span>Deal Control</span></div>
+        <div class="brand"><img src="/img/europa-icon.png" alt="" class="brand-icon" /><div class="brand-tx">Europa Pharmaceutical<span>Deal Control</span></div></div>
         ${nav.map(([n, label, badge]) => `
           <button class="nav-item ${State.route.name === n ? 'active' : ''}" data-nav="${n}">
             ${label} ${badge || ''}
@@ -150,6 +151,7 @@ function shell(title, bodyHtml, actionsHtml = '') {
           <div class="role">${esc(State.user.role)}</div>
           <button class="nav-item" id="logout" style="margin-top:8px;padding-left:0">Sign out</button>
         </div>
+        <div class="boran"><img src="/img/boran-coat.png" alt="Boran&amp;Co Group" /><span>Part of the<br><b>Boran&amp;Co Group</b></span></div>
       </aside>
       <div class="main">
         <div class="topbar">
@@ -182,9 +184,9 @@ async function renderDeals() {
   shell('Deals', `
     <div class="stats">
       <div class="stat"><div class="label">Active deals</div><div class="value">${p.activeDeals}</div></div>
-      <div class="stat"><div class="label">Customer balance to collect</div><div class="value blue tnum">${money(p.totalCustomerBalance)}</div></div>
-      <div class="stat"><div class="label">Open supplier invoices</div><div class="value tnum">${money(p.totalSupplierOpen)}</div></div>
-      <div class="stat"><div class="label">Income still expected</div><div class="value tnum">${money(p.totalIncomeExpectedRemaining)}</div></div>
+      <div class="stat"><div class="label">Received of invoiced</div><div class="value green tnum">${money(p.totalReceived)}</div><div class="stat-sub">of ${money(p.totalInvoiced)}${p.totalInvoiced > 0 ? ' · ' + Math.round(p.totalReceived / p.totalInvoiced * 100) + '%' : ''}</div></div>
+      <div class="stat"><div class="label">Still expecting to collect</div><div class="value tnum">${money(p.totalCustomerBalance)}</div></div>
+      <div class="stat"><div class="label">Our income kept</div><div class="value gold tnum">${money(p.totalIncomeKept)}</div><div class="stat-sub">of ${money(p.totalIncomeExpected)} expected</div></div>
     </div>
     ${data.deals.length ? `<div class="deal-list">${cards}</div>` :
       `<div class="empty"><h3>No active deals yet</h3><p>${canWrite() ? 'Create your first deal to start tracking payments and deliveries.' : 'Deals will appear here once created.'}</p></div>`}
@@ -280,6 +282,7 @@ async function renderDeal() {
   let d;
   try { d = await api('/deals/' + State.route.id); } catch (e) { return err(e.message); }
   State.cache.deal = d;
+  State.cache.docs = {}; (d.documents || []).forEach((x) => { State.cache.docs[x.id] = { mime: x.mime, name: x.original_name }; });
   const deal = d.deal, c = d.computed, cur = deal.currency, na = d.nextAction;
   const ro = deal.status !== 'active'; // read-only for entries
   const naClass = na.priority === 0 ? 'attn' : (na.code === 'complete_deal' ? 'done' : '');
@@ -338,9 +341,30 @@ async function renderDeal() {
         <div class="flow-big blue">${money(paidToSupplier, cur)}</div>
         <div class="flow-sub">paid of ${money(supplierOwed, cur)} owed</div>
         <div class="progress blue"><span style="width:${paidPct}%"></span></div>
-        ${c.supplierInvoicesOpen > 0.005 ? `<div class="flow-tag amber">Still to pay ${money(c.supplierInvoicesOpen, cur)}</div>` : `<div class="flow-tag green">Nothing open</div>`}
+        ${c.supplierInvoicesOpen > 0.005 ? `<div class="flow-tag amber">Open to be paid ${money(c.supplierInvoicesOpen, cur)}</div>` : `<div class="flow-tag green">Nothing open</div>`}
       </div>
     </div>
+
+    <!-- OUR POSITION: received vs expected, and in-house vs income -->
+    ${(() => {
+      const held = c.totalReceived - paidToSupplier;
+      const diff = held - c.incomeKept;
+      const diffPos = diff >= -0.005;
+      const recPct = deal.invoice_total > 0 ? Math.round(c.totalReceived / deal.invoice_total * 100) : 0;
+      return `<div class="position">
+        <div class="pos-group">
+          <div class="pos-item"><div class="pos-k">Expected to receive</div><div class="pos-v">${money(deal.invoice_total, cur)}</div></div>
+          <div class="pos-item"><div class="pos-k">Received so far</div><div class="pos-v green">${money(c.totalReceived, cur)} <span class="pos-pct">${recPct}%</span></div></div>
+          <div class="pos-item"><div class="pos-k">Still expecting to collect</div><div class="pos-v ${c.customerBalance > 0.005 ? 'amber' : 'green'}">${money(c.customerBalance, cur)}</div></div>
+        </div>
+        <div class="pos-divider"></div>
+        <div class="pos-group">
+          <div class="pos-item"><div class="pos-k">Cash held in-house now</div><div class="pos-v">${money(held, cur)}</div></div>
+          <div class="pos-item"><div class="pos-k">Of which our income (4%)</div><div class="pos-v gold">${money(c.incomeKept, cur)}</div></div>
+          <div class="pos-item"><div class="pos-k">${diffPos ? "Supplier's share still held" : 'Company money fronted'}</div><div class="pos-v ${diffPos ? 'navy' : 'red'}">${money(Math.abs(diff), cur)}</div></div>
+        </div>
+      </div>`;
+    })()}
 
     ${!ro && canWrite() ? `
     <div class="quick-actions">
@@ -383,7 +407,7 @@ function uploadTile(d, title, category, icon, ro) {
       <div class="tile-icon">${icon}</div>
       <div class="tile-title">${esc(title)}</div>
       <div class="tile-status">${has ? `<span class="pill green">${files.length} file${files.length > 1 ? 's' : ''}</span>` : `<span class="pill gray">None yet</span>`}</div>
-      ${files.length ? `<div class="tile-files">${files.slice(0, 3).map((f) => `<a href="/api/documents/${f.id}/file" target="_blank">${esc(f.original_name)}</a>`).join('')}</div>` : ''}
+      ${files.length ? `<div class="tile-files">${files.slice(0, 4).map((f) => `<a href="#" data-preview="${f.id}">${esc(f.original_name)}</a>`).join('')}</div>` : ''}
       ${!ro && canWrite() ? `<button class="btn sm tile-btn" data-tileupload="${esc(category)}">${has ? 'Add another' : 'Upload'}</button>` : ''}
     </div>`;
 }
@@ -594,7 +618,7 @@ function docItem(doc) {
   const pillCls = { approved: 'green', awaiting: 'amber', flagged: 'red', missing: 'gray', attached: 'blue' }[doc.status] || 'gray';
   return `<div class="jrow" style="padding:10px 14px;margin-bottom:8px">
     <div class="jrow-top">
-      <div><a href="/api/documents/${doc.id}/file" target="_blank">${esc(doc.original_name)}</a>
+      <div><a href="#" data-preview="${doc.id}">${esc(doc.original_name)}</a>
         <span class="pill ${pillCls}">${esc(doc.status)}</span></div>
       <div>${isAdmin() ? `
         <button class="btn sm" data-docstatus="${doc.id}:approved">Approve</button>
@@ -665,6 +689,20 @@ function wireDeal(d) {
     document.getElementById('details-body').classList.toggle('hidden');
   });
   document.querySelectorAll('[data-tileupload]').forEach((b) => (b.onclick = () => quickUpload(deal.id, b.dataset.tileupload)));
+  document.querySelectorAll('[data-preview]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); docPreview(Number(a.dataset.preview)); }));
+}
+
+/* One-click document preview (PDF in a frame, images inline). */
+function docPreview(id) {
+  const meta = (State.cache.docs && State.cache.docs[id]) || { mime: '', name: 'Document' };
+  const url = '/api/documents/' + id + '/file';
+  const isImg = /^image\//.test(meta.mime);
+  const body = isImg
+    ? `<img src="${url}" alt="${esc(meta.name)}" style="max-width:100%;border-radius:8px;display:block;margin:0 auto" />`
+    : `<iframe src="${url}" style="width:100%;height:72vh;border:1px solid var(--border);border-radius:8px"></iframe>`;
+  const footer = `<a class="btn" href="${url}" target="_blank">Open in new tab</a><button class="btn primary" id="pv_close">Close</button>`;
+  const close = openModal(meta.name, body, footer, { wide: true });
+  document.getElementById('pv_close').onclick = close;
 }
 
 /* One-click upload: open the file picker, then send immediately. */

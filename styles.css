@@ -340,3 +340,83 @@ textarea { min-height: 74px; resize: vertical; }
   .dc-income { text-align: left; }
   .big-btn { flex-basis: 100%; }
 }
+
+/* ============================================================
+   EUROPA BRAND THEME  (navy + gold) — overrides earlier defaults
+   ============================================================ */
+:root {
+  --bg: #f1eee7;
+  --surface: #ffffff;
+  --surface-2: #faf8f2;
+  --border: #e9e2d2;
+  --border-strong: #d9cfb6;
+  --text: #16233a;
+  --muted: #6c6656;
+  --navy: #0f2744;
+  --navy-2: #17385f;
+  --blue: #17385f;        /* re-map "blue" accents to navy */
+  --blue-dark: #0f2744;
+  --blue-soft: #eef2f8;
+  --gold: #a97e18;
+  --gold-bright: #c9a441;
+  --gold-soft: #fbf7ee;
+}
+
+/* primary actions in navy; links & focus stay legible */
+.btn.primary { background: var(--navy); border-color: var(--navy); color: #fff; }
+.btn.primary:hover { background: var(--navy-2); border-color: var(--navy-2); }
+a { color: var(--gold); }
+
+/* gold active nav */
+.nav-item.active { background: var(--gold); color: #1c1400; }
+.nav-item.active:hover { background: var(--gold-bright); color: #1c1400; }
+
+/* progress fills: default gold, navy variant, gold variant */
+.progress > span { background: var(--gold); }
+.progress.blue > span { background: var(--navy-2); }
+.progress.gold > span { background: var(--gold); }
+
+/* value colours */
+.stat .value.gold, .fig .v.gold, .pos-v.gold, .flow-big.gold { color: var(--gold); }
+.pos-v.navy { color: var(--navy-2); }
+.stat-sub { font-size: 12px; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
+
+/* sidebar brand with icon */
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand-icon { width: 34px; height: 34px; border-radius: 8px; flex: none; }
+.brand-tx { display: flex; flex-direction: column; color: #f2e6c6; font-size: 15px; font-weight: 700; line-height: 1.15; }
+.brand-tx span { font-size: 10.5px; font-weight: 500; color: #8ba6c9; letter-spacing: 0.05em; margin-top: 2px; }
+
+/* Boran&Co footer in the sidebar */
+.boran { display: flex; align-items: center; gap: 9px; margin-top: 12px; padding-top: 12px;
+  border-top: 1px solid rgba(255,255,255,0.12); }
+.boran img { width: 30px; height: auto; flex: none; }
+.boran span { font-size: 11px; color: #9db2d0; line-height: 1.25; }
+.boran b { color: #d9c48a; font-weight: 700; }
+
+/* login — dark navy card with the full logo */
+.login { background: radial-gradient(1200px 600px at 50% -10%, #1c3a63, #0c1f39 60%); }
+.login-card { background: #0f2744; border: 1px solid #23406a; color: #e7dcc2; box-shadow: 0 20px 60px rgba(0,0,0,0.45); }
+.login-logo { width: 100%; max-width: 300px; display: block; margin: 2px auto 6px; border-radius: 10px; }
+.login-card .sub { color: #9db2d0; text-align: center; }
+.login-card label { color: #cdd9ea; }
+.login-card input { background: #0b1e37; border-color: #2c4a72; color: #fff; }
+.login-card input:focus-visible { outline-color: rgba(201,164,65,0.5); }
+.login-card .btn.primary { background: var(--gold); border-color: var(--gold); color: #1c1400; }
+.login-card .btn.primary:hover { background: var(--gold-bright); border-color: var(--gold-bright); }
+.login-card .demo { color: #8ea6c6; border-top-color: #23406a; text-align: center; }
+.login-boran { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 16px; color: #9db2d0; font-size: 12px; }
+.login-boran img { width: 26px; height: auto; }
+
+/* "Our position" band */
+.position { display: flex; flex-wrap: wrap; align-items: stretch; gap: 10px 26px;
+  background: var(--gold-soft); border: 1px solid #ecdcb4; border-radius: 12px;
+  padding: 16px 20px; margin-bottom: 18px; }
+.pos-group { display: flex; gap: 26px; flex-wrap: wrap; flex: 1; }
+.pos-divider { width: 1px; background: #e6d4a8; align-self: stretch; }
+.pos-item { min-width: 130px; }
+.pos-k { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); font-weight: 650; }
+.pos-v { font-size: 19px; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; }
+.pos-v.green { color: var(--green); } .pos-v.amber { color: var(--amber); } .pos-v.red { color: var(--red); }
+.pos-pct { font-size: 12px; font-weight: 600; color: var(--muted); }
+@media (max-width: 860px) { .pos-divider { display: none; } .position { gap: 12px 20px; } }

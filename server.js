@@ -138,11 +138,16 @@ app.get('/api/deals', requireAuth, wrap(async (req, res) => {
   }
   out.sort((a, b) => a.nextAction.priority - b.nextAction.priority);
   const active = out.filter((d) => d.status === 'active');
+  const sum = (f) => finance.round2(active.reduce((s, d) => s + f(d.computed, d), 0));
   const portfolio = {
     activeDeals: active.length,
-    totalCustomerBalance: finance.round2(active.reduce((s, d) => s + d.computed.customerBalance, 0)),
-    totalSupplierOpen: finance.round2(active.reduce((s, d) => s + d.computed.supplierInvoicesOpen, 0)),
-    totalIncomeExpectedRemaining: finance.round2(active.reduce((s, d) => s + d.computed.incomeRemaining, 0)),
+    totalInvoiced: sum((c, d) => d.invoice_total),
+    totalReceived: sum((c) => c.totalReceived),
+    totalCustomerBalance: sum((c) => c.customerBalance),
+    totalSupplierOpen: sum((c) => c.supplierInvoicesOpen),
+    totalIncomeKept: sum((c) => c.incomeKept),
+    totalIncomeExpected: sum((c) => c.incomeExpectedTotal),
+    totalIncomeExpectedRemaining: sum((c) => c.incomeRemaining),
   };
   res.json({ deals: out, portfolio });
 }));
@@ -438,6 +443,14 @@ app.get('/api/documents/:id/file', requireAuth, wrap(async (req, res) => {
 app.get('/api/deals/:id/audit', requireAuth, wrap(async (req, res) => {
   res.json((await query('SELECT * FROM audit_log WHERE deal_id=$1 ORDER BY created_at DESC, id DESC', [Number(req.params.id)])).rows);
 }));
+
+// ---------- brand images ----------
+const BRAND_IMAGES = new Set(['europa-logo.png', 'europa-icon.png', 'boran-coat.png']);
+app.get('/img/:name', (req, res) => {
+  if (!BRAND_IMAGES.has(req.params.name)) return res.status(404).end();
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.sendFile(path.join(__dirname, req.params.name));
+});
 
 // ---------- static frontend (flat layout: assets sit next to server.js) ----------
 app.get(['/', '/index.html'], (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
