@@ -303,23 +303,20 @@ app.post('/api/deals/:id/supplier-invoices', requireAuth, requireRole('admin', '
   const d = await getDeal(Number(req.params.id));
   if (!d) return res.status(404).json({ error: 'Deal not found.' });
   if (d.status !== 'active') return res.status(409).json({ error: 'This deal is not open for new entries.' });
+  // A delivery is purely a record that goods arrived. It has NO effect on money.
   const b = req.body || {};
-  if (!b.invoice_number) return res.status(400).json({ error: 'A supplier invoice number is required.' });
-  const proformaAlloc = num(b.proforma_allocated);
-  if (!(proformaAlloc > 0)) return res.status(400).json({ error: 'Enter the documented proforma value allocated to this batch.' });
-  const actual = num(b.actual_total);
-  const prepayCredit = num(b.prepay_credit_applied);
-  if (prepayCredit < 0) return res.status(400).json({ error: 'Prepayment credit cannot be negative.' });
-  if (prepayCredit > actual + eps) return res.status(400).json({ error: 'Prepayment credit cannot exceed the invoice total.' });
+  if (!b.invoice_number) return res.status(400).json({ error: 'A delivery / invoice number is required.' });
+  const deliveredValue = num(b.customer_sales_value);
+  if (!(deliveredValue > 0)) return res.status(400).json({ error: 'Enter the value of goods delivered in this batch.' });
   const status = entersLedger(req.user) ? 'posted' : 'pending';
   const id = (await query(
     `INSERT INTO supplier_invoices (deal_id,invoice_number,issue_date,delivery_date,proforma_allocated,actual_total,prepay_credit_applied,customer_sales_value,quantity,notes,status,created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-    [d.id, String(b.invoice_number).trim(), b.issue_date || null, b.delivery_date || null, proformaAlloc, actual, prepayCredit, num(b.customer_sales_value), b.quantity || null, b.notes || null, status, req.user.id]
+     VALUES ($1,$2,$3,$4,0,0,0,$5,$6,$7,$8,$9) RETURNING id`,
+    [d.id, String(b.invoice_number).trim(), b.issue_date || b.delivery_date || null, b.delivery_date || null, deliveredValue, b.quantity || null, b.notes || null, status, req.user.id]
   )).rows[0].id;
-  const summary = { amount: actual, invoice_number: b.invoice_number, proforma_allocated: proformaAlloc, prepay_credit_applied: prepayCredit, customer_sales_value: num(b.customer_sales_value), date: b.issue_date || '' };
+  const summary = { amount: deliveredValue, invoice_number: b.invoice_number, customer_sales_value: deliveredValue, date: b.delivery_date || b.issue_date || '', delivery: true };
   if (status === 'pending') await createApproval(d.id, 'supplier_invoice', id, 'create', summary, req.user);
-  await audit(d.id, req.user, status === 'posted' ? 'post_supplier_invoice' : 'propose_supplier_invoice', 'supplier_invoice', id, summary);
+  await audit(d.id, req.user, status === 'posted' ? 'post_delivery' : 'propose_delivery', 'supplier_invoice', id, summary);
   res.json({ id, status });
 }));
 
@@ -328,29 +325,19 @@ app.post('/api/deals/:id/supplier-payments', requireAuth, requireRole('admin', '
   const d = await getDeal(Number(req.params.id));
   if (!d) return res.status(404).json({ error: 'Deal not found.' });
   if (d.status !== 'active') return res.status(409).json({ error: 'This deal is not open for new entries.' });
+  // A payment to the supplier. Owed = proforma total; we just record money sent.
   const b = req.body || {};
   const amount = num(b.amount);
   if (!(amount > 0)) return res.status(400).json({ error: 'Enter an amount greater than zero.' });
   if (!b.date) return res.status(400).json({ error: 'A payment date is required.' });
-  const isPrepay = b.is_prepayment ? 1 : 0;
-  let invoiceId = null;
-  if (!isPrepay) {
-    invoiceId = b.invoice_id ? Number(b.invoice_id) : null;
-    if (!invoiceId) return res.status(400).json({ error: 'Select the supplier invoice this payment settles.' });
-    const inv = (await query('SELECT * FROM supplier_invoices WHERE id=$1 AND deal_id=$2', [invoiceId, d.id])).rows[0];
-    if (!inv || inv.status !== 'posted') return res.status(400).json({ error: 'That supplier invoice is not available for payment.' });
-    const paid = (await query("SELECT COALESCE(SUM(amount),0) AS s FROM supplier_payments WHERE invoice_id=$1 AND is_prepayment=0 AND status='posted'", [invoiceId])).rows[0].s;
-    const open = finance.round2(Number(inv.actual_total) - Number(inv.prepay_credit_applied) - Number(paid));
-    if (amount > open + eps) return res.status(400).json({ error: `Payment exceeds the invoice open balance (${open}). Enter ${open} or less.` });
-  }
   const status = entersLedger(req.user) ? 'posted' : 'pending';
   if (!entersLedger(req.user) && await duplicatePending(d.id, 'supplier_payment', 'create', amount, b.date))
     return res.status(409).json({ error: 'An identical submission is already awaiting approval.' });
   const id = (await query(
-    'INSERT INTO supplier_payments (deal_id,invoice_id,date,amount,is_prepayment,bank_ref,notes,status,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id',
-    [d.id, invoiceId, b.date, amount, isPrepay, b.bank_ref || null, b.notes || null, status, req.user.id]
+    'INSERT INTO supplier_payments (deal_id,invoice_id,date,amount,is_prepayment,bank_ref,notes,status,created_by) VALUES ($1,NULL,$2,$3,0,$4,$5,$6,$7) RETURNING id',
+    [d.id, b.date, amount, b.bank_ref || null, b.notes || null, status, req.user.id]
   )).rows[0].id;
-  const summary = { amount, date: b.date, is_prepayment: isPrepay, invoice_id: invoiceId };
+  const summary = { amount, date: b.date };
   if (status === 'pending') await createApproval(d.id, 'supplier_payment', id, 'create', summary, req.user);
   await audit(d.id, req.user, status === 'posted' ? 'post_supplier_payment' : 'propose_supplier_payment', 'supplier_payment', id, summary);
   res.json({ id, status });
@@ -437,6 +424,62 @@ app.get('/api/documents/:id/file', requireAuth, wrap(async (req, res) => {
   res.setHeader('Content-Type', doc.mime);
   res.setHeader('Content-Disposition', `inline; filename="${String(doc.original_name).replace(/"/g, '')}"`);
   res.send(doc.content); // bytea -> Buffer
+}));
+
+// ---------- global activity log (admin) ----------
+app.get('/api/audit/recent', requireAuth, requireRole('admin'), wrap(async (req, res) => {
+  const limit = Math.min(300, Math.max(1, Number(req.query.limit) || 150));
+  const rows = (await query(
+    `SELECT a.id, a.actor_name, a.action, a.entity_type, a.deal_id, a.detail, a.created_at, d.ref AS deal_ref
+     FROM audit_log a LEFT JOIN deals d ON d.id = a.deal_id
+     ORDER BY a.created_at DESC, a.id DESC LIMIT $1`, [limit]
+  )).rows;
+  res.json(rows);
+}));
+
+// ---------- reports (Total Finances) ----------
+app.get('/api/reports', requireAuth, wrap(async (req, res) => {
+  const deals = (await query("SELECT * FROM deals WHERE status IN ('active','completed') ORDER BY created_at DESC")).rows;
+  let moneyIn = 0, moneyOut = 0, incomeKept = 0, incomeExpected = 0, toCollect = 0, toPay = 0, delivered = 0;
+  let biggest = null, topIncome = null;
+  const rows = [];
+  for (const d of deals) {
+    const { computed: c } = await computeFor(d);
+    moneyIn += c.totalReceived; moneyOut += c.totalPaidToSupplier;
+    incomeKept += c.incomeKept; incomeExpected += c.incomeExpectedTotal;
+    toCollect += c.customerBalance; toPay += c.supplierOpenToPay; delivered += c.deliveredValue;
+    const rowItem = {
+      id: d.id, ref: d.ref, title: d.title, customer: d.customer_name, supplier: d.supplier_name,
+      currency: d.currency, status: d.status, invoiceTotal: d.invoice_total,
+      received: c.totalReceived, paid: c.totalPaidToSupplier, income: c.incomeExpectedTotal,
+      incomeKept: c.incomeKept, delivered: c.deliveredValue,
+    };
+    rows.push(rowItem);
+    if (!biggest || d.invoice_total > biggest.invoiceTotal) biggest = rowItem;
+    if (!topIncome || c.incomeExpectedTotal > topIncome.income) topIncome = rowItem;
+  }
+  const r2 = finance.round2;
+  // Monthly money in (client receipts) and out (supplier payments), last 12 months.
+  const inByMonth = (await query("SELECT substr(date,1,7) AS m, SUM(amount_received) AS s FROM customer_payments WHERE status='posted' GROUP BY 1 ORDER BY 1")).rows;
+  const outByMonth = (await query("SELECT substr(date,1,7) AS m, SUM(amount) AS s FROM supplier_payments WHERE status='posted' GROUP BY 1 ORDER BY 1")).rows;
+  const monthsSet = {};
+  inByMonth.forEach((x) => { monthsSet[x.m] = monthsSet[x.m] || { m: x.m, in: 0, out: 0 }; monthsSet[x.m].in = r2(Number(x.s)); });
+  outByMonth.forEach((x) => { monthsSet[x.m] = monthsSet[x.m] || { m: x.m, in: 0, out: 0 }; monthsSet[x.m].out = r2(Number(x.s)); });
+  const months = Object.values(monthsSet).sort((a, b) => a.m.localeCompare(b.m)).slice(-12);
+
+  res.json({
+    totals: {
+      dealCount: deals.length,
+      activeCount: deals.filter((d) => d.status === 'active').length,
+      completedCount: deals.filter((d) => d.status === 'completed').length,
+      moneyIn: r2(moneyIn), moneyOut: r2(moneyOut),
+      incomeKept: r2(incomeKept), incomeExpected: r2(incomeExpected),
+      toCollect: r2(toCollect), toPaySupplier: r2(toPay), delivered: r2(delivered),
+      netCashHeld: r2(moneyIn - moneyOut),
+    },
+    biggest, topIncome, months,
+    deals: rows,
+  });
 }));
 
 // ---------- audit ----------

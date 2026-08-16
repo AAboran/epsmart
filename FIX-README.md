@@ -1,23 +1,23 @@
 # Europa Deal Control — Vercel (flat layout)
 
-This version keeps EVERY file at the top level (no folders), which is the layout
-that uploads to GitHub cleanly. Do not put any of these files inside a folder.
+Every file sits at the top level (no folders) so it uploads to GitHub cleanly.
 
 ## Files that belong in the repo (all at the top level)
-server.js, db.js, auth.js, finance.js, index.html, app.js, styles.css,
-package.json, package-lock.json, vercel.json
+server.js, db.js, auth.js, finance.js, app.js, index.html, styles.css,
+package.json, package-lock.json, vercel.json,
+europa-logo.png, europa-icon.png, boran-coat.png
 
-Anything else (for example old files named `index.js`, `download`, `download (1)`,
-or a `public/` or `api/` folder) should be deleted from the repo.
+Delete anything else (old `index.js`, `download`, `download (1)`, or any folder).
 
-## Requirements on Vercel (already set if you got this far)
-1. A Postgres database connected to the project (adds DATABASE_URL / POSTGRES_URL).
+## Requirements on Vercel
+1. A Postgres database connected to the project (sets DATABASE_URL / POSTGRES_URL).
 2. Environment variable EUROPA_JWT_SECRET = a long random string.
-After changing files, wait for Vercel to redeploy, then open the site.
+After changing files, wait for Vercel to redeploy, then hard-refresh the site.
 
-Demo logins: admin/admin123, office/office123, viewer/viewer123 — change them under
-User access after first sign-in.
-
-## Run locally (optional)
-npm install
-set DATABASE_URL and EUROPA_JWT_SECRET, then: npm start  ->  http://localhost:3000
+## Going live — first sign in
+On a brand-new database the app creates ONE administrator:
+  username: admin    password: changeme-admin
+Sign in and immediately change it in User access → Reset password.
+There are no demo/office/viewer accounts and no sample deal — create your own users
+and deals. Passwords are stored encrypted and can never be shown; use Reset password
+to set a new one (you can copy it at that moment).

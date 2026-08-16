@@ -173,33 +173,12 @@ async function init() {
 }
 
 async function seed() {
-  // Idempotent: ON CONFLICT DO NOTHING makes this safe even if two serverless
-  // instances run it at the same time on first deploy.
-  const mk = (u, name, pw, role) =>
-    pool.query('INSERT INTO users (username,name,password_hash,role) VALUES ($1,$2,$3,$4) ON CONFLICT (username) DO NOTHING',
-      [u, name, bcrypt.hashSync(pw, 10), role]);
-  await mk('admin', 'Administrator', 'admin123', 'admin');
-  await mk('office', 'Office Worker', 'office123', 'office');
-  await mk('viewer', 'Visitor', 'viewer123', 'visitor');
-
-  const existing = (await pool.query("SELECT 1 FROM deals WHERE ref='DEMO-0001'")).rows[0];
-  if (existing) return;
-  const admin = (await pool.query("SELECT id FROM users WHERE username='admin'")).rows[0];
-  const inserted = (await pool.query(
-    `INSERT INTO deals (ref,title,customer_name,supplier_name,currency,proforma_total,invoice_total,
-       customer_prepay_required,supplier_prepay_required,commission_rate,created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (ref) DO NOTHING RETURNING id`,
-    ['DEMO-0001', 'Sample supplement resale deal', 'Sample Customer Ltd', 'Sample Supplier SIA',
-      'EUR', 96000, 100000, 30000, 20000, 0.04, admin.id]
-  )).rows[0];
-  if (inserted) {
-    await pool.query(
-      `INSERT INTO customer_payments (deal_id,date,ptype,is_prepayment,amount_received,amount_applied,overpayment,kept,reserved,created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [inserted.id, '2026-01-15', 'prepayment', 1, 30000, 30000, 0, 1200, 28800, admin.id]
-    );
-  }
-  console.log('Seeded users (admin/admin123, office/office123, viewer/viewer123) and demo deal.');
+  // Go-live clean: create a single administrator if the users table is empty.
+  // Change this password immediately after first sign-in (User access → Reset).
+  await pool.query(
+    'INSERT INTO users (username,name,password_hash,role) VALUES ($1,$2,$3,$4) ON CONFLICT (username) DO NOTHING',
+    ['admin', 'Administrator', bcrypt.hashSync('changeme-admin', 10), 'admin']
+  );
 }
 
 if (require.main === module && process.argv.includes('--seed')) {

@@ -120,81 +120,56 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
   const prepayRemaining = round2(Math.max(0, custPrepayReq - prepayReceived));
   const prepayAbovePlan = round2(Math.max(0, prepayReceived - custPrepayReq));
 
-  // ---- Our income ----
-  const incomeKept = round2(totalApplied * rate);
-  const incomeExpectedTotal = round2(invoiceTotal * rate);
+  // ---- Our income = the markup we add (client invoice - supplier proforma) ----
+  // Realized proportionally as the client pays. This reconciles exactly: once the
+  // client has fully paid and the supplier is fully paid, cash held == our income.
+  const dealMargin = round2(Math.max(0, invoiceTotal - proformaTotal));
+  const keptRatio = invoiceTotal > 0 ? dealMargin / invoiceTotal : 0;
+  const incomeExpectedTotal = dealMargin;
+  const incomeKept = round2(totalApplied * keptRatio);
   const incomeRemaining = round2(Math.max(0, incomeExpectedTotal - incomeKept));
+  const marginPct = proformaTotal > 0 ? round2((dealMargin / proformaTotal) * 100) : 0;
 
-  // ---- Supplier reserve (the 96%) ----
+  // ---- Supplier reserve (the 96% of what the client has paid) ----
   const supplierReserveCollected = round2(totalApplied - incomeKept);
 
-  // ---- Supplier invoices / batches ----
-  const supplierInvoicesGross = round2(si.reduce((a, b) => a + (Number(b.actual_total) || 0), 0));
-  const prepayCreditApplied = round2(
-    si.reduce((a, b) => a + (Number(b.prepay_credit_applied) || 0), 0)
-  );
-  const proformaAllocated = round2(si.reduce((a, b) => a + (Number(b.proforma_allocated) || 0), 0));
-  const deliveredSalesValue = round2(
-    si.reduce((a, b) => a + (Number(b.customer_sales_value) || 0), 0)
-  );
+  // =====================================================================
+  // PAYMENT LAYER (money to the supplier) — independent of deliveries.
+  // What we owe the supplier is the agreed proforma total; what we've paid is
+  // simply the sum of every payment we've sent them. Deliveries never change
+  // this.
+  // =====================================================================
+  const supplierOwed = proformaTotal;
+  const totalPaidToSupplier = round2(sp.reduce((a, p) => a + (Number(p.amount) || 0), 0));
+  const supplierOpenToPay = round2(Math.max(0, supplierOwed - totalPaidToSupplier));
+  const supplierOverpaid = round2(Math.max(0, totalPaidToSupplier - supplierOwed));
 
-  // Payments made against commercial invoices (not prepayments).
-  const supplierInvoicePaid = round2(
-    sp.filter((p) => !p.is_prepayment).reduce((a, p) => a + (Number(p.amount) || 0), 0)
-  );
-  // Per-invoice open balance: actual_total - prepay credit - invoice payments linked to it.
-  const invoicePaidById = {};
-  for (const p of sp) {
-    if (p.is_prepayment) continue;
-    const id = p.invoice_id;
-    if (id == null) continue;
-    invoicePaidById[id] = round2((invoicePaidById[id] || 0) + (Number(p.amount) || 0));
-  }
-  let supplierInvoicesOpen = 0;
-  const invoiceBalances = si.map((b) => {
-    const paid = invoicePaidById[b.id] || 0;
-    const open = round2(
-      Math.max(0, (Number(b.actual_total) || 0) - (Number(b.prepay_credit_applied) || 0) - paid)
-    );
-    supplierInvoicesOpen = round2(supplierInvoicesOpen + open);
-    return { id: b.id, paid, open };
-  });
-  const openInvoiceCount = invoiceBalances.filter((b) => b.open > 0.005).length;
+  // =====================================================================
+  // DELIVERY LAYER (goods received, by batch) — purely informational.
+  // We measure delivered value against the order value (customer invoice).
+  // =====================================================================
+  const deliveredValue = round2(si.reduce((a, b) => a + (Number(b.customer_sales_value) || 0), 0));
+  const deliveryCount = si.length;
+  const deliveryTarget = invoiceTotal;
+  const deliveryPct = deliveryTarget > 0 ? round2((deliveredValue / deliveryTarget) * 100) : 0;
+  const deliveryOutstanding = round2(Math.max(0, deliveryTarget - deliveredValue));
+  const overDelivery = round2(Math.max(0, deliveredValue - deliveryTarget));
 
-  // ---- Supplier prepayment ----
-  const supplierPrepaySent = round2(
-    sp.filter((p) => p.is_prepayment).reduce((a, p) => a + (Number(p.amount) || 0), 0)
-  );
-  const supplierPrepayUnused = round2(Math.max(0, supplierPrepaySent - prepayCreditApplied));
-  const supplierPrepayOverApplied = round2(Math.max(0, prepayCreditApplied - supplierPrepaySent));
-  const supplierPrepayRemaining = round2(Math.max(0, suppPrepayReq - supplierPrepaySent));
-  const supplierPrepayAbovePlan = round2(Math.max(0, supplierPrepaySent - suppPrepayReq));
+  // ---- Our position: cash in hand vs. our income ----
+  const heldInHouse = round2(totalReceived - totalPaidToSupplier);
+  const supplierShareHeld = round2(heldInHouse - incomeKept); // supplier money still with us
+  const companyMoneyFronted = round2(Math.max(0, -supplierShareHeld));
 
-  // ---- Delivery progress ----
-  const deliveryPct = invoiceTotal > 0 ? round2((deliveredSalesValue / invoiceTotal) * 100) : 0;
-  const deliveryOutstanding = round2(Math.max(0, invoiceTotal - deliveredSalesValue));
-  const overDelivery = round2(Math.max(0, deliveredSalesValue - invoiceTotal));
-
-  // ---- Profit reality vs the 4% target ----
-  // Actual known supplier cost = documented commercial invoice totals so far.
-  const actualSupplierCost = supplierInvoicesGross;
-  // What we have actually set aside for the supplier from customer money.
-  const reserveAvailableForSupplier = round2(supplierReserveCollected - supplierInvoicePaid);
-  // If open supplier obligations exceed the reserve we hold, that gap needs funding.
-  const supplierFundingShortfall = round2(
-    Math.max(0, supplierInvoicesOpen - Math.max(0, reserveAvailableForSupplier))
-  );
-  // Company money used = supplier paid beyond the 96% reserve collected.
-  const companyMoneyUsed = round2(Math.max(0, supplierInvoicePaid - supplierReserveCollected));
-  // Forecast profit if the deal closes at current documented values.
-  const forecastProfit = round2(invoiceTotal - actualSupplierCost);
-  const targetProfit = incomeExpectedTotal; // the 4% target
+  // ---- Profit vs the 4% target ----
+  const forecastProfit = round2(invoiceTotal - supplierOwed); // the built-in margin
+  const targetProfit = incomeExpectedTotal;
   const profitVsTarget = round2(forecastProfit - targetProfit);
 
-  const supplierOverpayment = round2(Math.max(0, supplierInvoicePaid + prepayCreditApplied - supplierInvoicesGross));
-
   return {
-    rate,
+    rate: keptRatio,           // the effective "our share" ratio applied to each receipt
+    commissionRate: rate,      // the nominal rate stored on the deal (for reference)
+    marginPct,
+    dealMargin,
     invoiceTotal,
     proformaTotal,
     // customer
@@ -210,37 +185,47 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
     incomeKept,
     incomeExpectedTotal,
     incomeRemaining,
-    // supplier reserve
     supplierReserveCollected,
-    reserveAvailableForSupplier,
-    // supplier invoices
-    supplierInvoicesGross,
-    supplierInvoicesOpen,
-    openInvoiceCount,
-    prepayCreditApplied,
-    proformaAllocated,
-    supplierInvoicePaid,
-    invoiceBalances,
-    supplierOverpayment,
-    // supplier prepayment
-    suppPrepayReq,
-    supplierPrepaySent,
-    supplierPrepayUnused,
-    supplierPrepayOverApplied,
-    supplierPrepayRemaining,
-    supplierPrepayAbovePlan,
-    // delivery
-    deliveredSalesValue,
+    // PAYMENT LAYER (supplier)
+    supplierOwed,
+    totalPaidToSupplier,
+    supplierOpenToPay,
+    supplierOverpaid,
+    // DELIVERY LAYER
+    deliveredValue,
+    deliveryCount,
+    deliveryTarget,
     deliveryPct,
     deliveryOutstanding,
     overDelivery,
-    // profit reality
-    actualSupplierCost,
-    supplierFundingShortfall,
-    companyMoneyUsed,
+    // position + profit
+    heldInHouse,
+    supplierShareHeld,
+    companyMoneyFronted,
     forecastProfit,
     targetProfit,
     profitVsTarget,
+
+    // ---- backward-compatible aliases (old field names still used by UI) ----
+    supplierInvoicesGross: supplierOwed,
+    supplierInvoicesOpen: supplierOpenToPay,
+    supplierInvoicePaid: totalPaidToSupplier,
+    supplierPrepaySent: 0,
+    prepayCreditApplied: 0,
+    proformaAllocated: 0,
+    invoiceBalances: [],
+    openInvoiceCount: 0,
+    supplierOverpayment: supplierOverpaid,
+    reserveAvailableForSupplier: round2(supplierReserveCollected - totalPaidToSupplier),
+    supplierFundingShortfall: companyMoneyFronted,
+    companyMoneyUsed: companyMoneyFronted,
+    actualSupplierCost: supplierOwed,
+    deliveredSalesValue: deliveredValue,
+    suppPrepayReq: 0,
+    supplierPrepayUnused: 0,
+    supplierPrepayOverApplied: 0,
+    supplierPrepayRemaining: 0,
+    supplierPrepayAbovePlan: 0,
   };
 }
 
@@ -253,23 +238,17 @@ function nextAction(deal, c) {
   if (deal.status === 'archived') return { code: 'archived', label: 'Archived', priority: 90 };
   if (deal.status === 'completed') return { code: 'complete', label: 'Completed', priority: 95 };
 
-  if (c.supplierFundingShortfall > eps)
-    return { code: 'resolve_funding', label: 'Resolve a funding difference', priority: 0 };
-
-  if (c.custPrepayReq > eps && c.prepayRemaining > eps)
-    return { code: 'customer_prepay', label: 'Record customer prepayment', priority: 1 };
+  if (c.companyMoneyFronted > eps)
+    return { code: 'resolve_funding', label: 'You have paid the supplier ahead — check the balance', priority: 0 };
 
   if (c.customerBalance > eps)
-    return { code: 'customer_payment', label: 'Record the next customer payment', priority: 2 };
+    return { code: 'customer_payment', label: 'Record the next client payment', priority: 2 };
 
-  if (c.suppPrepayReq > eps && c.supplierPrepayRemaining > eps)
-    return { code: 'supplier_prepay', label: 'Send supplier prepayment', priority: 3 };
-
-  if (c.supplierInvoicesOpen > eps)
-    return { code: 'pay_supplier', label: 'Pay an open supplier invoice', priority: 4 };
+  if (c.supplierOpenToPay > eps)
+    return { code: 'pay_supplier', label: 'Pay the supplier', priority: 4 };
 
   if (c.deliveryOutstanding > eps)
-    return { code: 'add_delivery', label: 'Add the next delivery', priority: 5 };
+    return { code: 'add_delivery', label: 'Awaiting remaining deliveries', priority: 5 };
 
   return { code: 'complete_deal', label: 'Complete the deal', priority: 6 };
 }

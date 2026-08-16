@@ -107,7 +107,6 @@ function renderLogin() {
         <div class="field"><label for="p">Password</label><input id="p" type="password" autocomplete="current-password" /></div>
         <button class="btn primary" id="go" style="width:100%">Sign in</button>
         <div id="lerr" class="alert err hidden" style="margin-top:14px"></div>
-        <div class="demo">Demo accounts — admin / admin123 · office / office123 · viewer / viewer123</div>
         <div class="login-boran"><img src="/img/boran-coat.png" alt="" /><span>Part of the Boran&amp;Co Group</span></div>
       </div>
     </div>`;
@@ -131,6 +130,7 @@ function shell(title, bodyHtml, actionsHtml = '') {
   const pendingBadge = State._pendingCount ? `<span class="badge">${State._pendingCount}</span>` : '';
   const nav = [
     ['deals', 'Deals'],
+    ['reports', 'Total Finances'],
     ['approvals', 'Approvals', isAdmin() ? pendingBadge : ''],
     ['users', 'User access', ''],
     ['archive', 'Archive', ''],
@@ -220,7 +220,12 @@ function dealCard(d) {
           <div class="dc-bar">
             <div class="dc-bar-top"><span>Paid to supplier</span><b class="blue">${money(paidToSupplier, cur)}</b></div>
             <div class="progress blue"><span style="width:${paidPct}%"></span></div>
-            ${c.supplierInvoicesOpen > 0.005 ? `<div class="meta">still to pay ${money(c.supplierInvoicesOpen, cur)}</div>` : `<div class="meta green">nothing open</div>`}
+            ${c.supplierOpenToPay > 0.005 ? `<div class="meta">open to be paid ${money(c.supplierOpenToPay, cur)}</div>` : `<div class="meta green">nothing open</div>`}
+          </div>
+          <div class="dc-bar">
+            <div class="dc-bar-top"><span>Delivered <span class="tag" style="margin-left:4px">tracking</span></span><b class="gold">${pct(c.deliveryPct)}</b></div>
+            <div class="progress ${c.overDelivery > 0 ? 'over' : ''}"><span style="width:${Math.min(100, c.deliveryPct)}%"></span></div>
+            <div class="meta">${money(c.deliveredValue, cur)} of ${money(c.deliveryTarget, cur)}</div>
           </div>
         </div>
       </div>
@@ -373,6 +378,9 @@ async function renderDeal() {
       <button class="btn big-btn" id="q-delivery">＋&nbsp; Add a delivery</button>
     </div>` : ''}
 
+    <!-- DELIVERY LAYER (separate from money) -->
+    ${deliveryCard(d, cur)}
+
     <!-- 3 DOCUMENT TILES -->
     <div class="section-title" style="margin:24px 0 12px">Documents — tap a tile to upload</div>
     <div class="tiles">
@@ -446,20 +454,7 @@ function sectionCustomerPrepay(c, cur, ro) {
 }
 
 /* ---- Section 2: supplier prepayment ---- */
-function sectionSupplierPrepay(c, cur, ro) {
-  if (c.suppPrepayReq <= 0 && c.supplierPrepaySent <= 0) return '';
-  return card('Supplier prepayment', `
-    <div class="rowset">
-      ${row('Required supplier prepayment', money(c.suppPrepayReq, cur))}
-      ${row('Amount sent', money(c.supplierPrepaySent, cur), 'green')}
-      ${row('Amount remaining', money(c.supplierPrepayRemaining, cur), c.supplierPrepayRemaining > 0 ? 'amber' : '')}
-      ${row('Credit already applied to invoices', money(c.prepayCreditApplied, cur))}
-      ${row('Unused prepayment credit', money(c.supplierPrepayUnused, cur), 'blue')}
-      ${c.supplierPrepayAbovePlan > 0 ? row('Prepayment above original requirement', money(c.supplierPrepayAbovePlan, cur), 'amber') : ''}
-      ${c.supplierPrepayOverApplied > 0 ? row('Over-applied prepayment credit', money(c.supplierPrepayOverApplied, cur), 'red') : ''}
-    </div>`,
-    !ro && canWrite() ? `<button class="btn sm" data-next="add-supp-prepay">Send supplier prepayment</button>` : '');
-}
+function sectionSupplierPrepay() { return ''; /* replaced by the payment layer + proforma model */ }
 
 /* ---- Section 3: customer payment journey ---- */
 function sectionCustomerJourney(d, cur, ro) {
@@ -489,8 +484,8 @@ function custRow(p, cur, d) {
       <div class="jrow-figs">
         <div><div class="k">Money received</div><div class="v tnum">${money(p.amount_received, cur)}</div></div>
         <div><div class="k">Applied to deal</div><div class="v tnum">${money(p.amount_applied, cur)}</div></div>
-        <div><div class="k">Our 4%</div><div class="v tnum blue">${money(p.kept, cur)}</div></div>
-        <div><div class="k">Supplier 96%</div><div class="v tnum">${money(p.reserved, cur)}</div></div>
+        <div><div class="k">Our income</div><div class="v tnum gold">${money(p.kept, cur)}</div></div>
+        <div><div class="k">For supplier</div><div class="v tnum">${money(p.reserved, cur)}</div></div>
         ${p.overpayment > 0 ? `<div><div class="k">Overpayment</div><div class="v tnum">${money(p.overpayment, cur)}</div></div>` : ''}
       </div>
       ${p.void_reason ? `<div class="meta" style="margin-top:8px">Void reason: ${esc(p.void_reason)}</div>` : ''}
@@ -498,103 +493,100 @@ function custRow(p, cur, d) {
     </div>`;
 }
 
-/* ---- Section 4: supplier invoices & deliveries ---- */
-function sectionSupplierInvoices(d, cur, ro) {
-  const c = d.computed;
+/* ---- deliveries list (used inside the delivery card) ---- */
+function deliveriesTable(d, cur) {
   const invs = d.supplierInvoices.filter((i) => i.status !== 'void');
-  const bal = {}; c.invoiceBalances.forEach((b) => (bal[b.id] = b));
-  const body = invs.length ? `
+  if (!invs.length) return `<div class="empty small">No deliveries recorded yet.</div>`;
+  return `
     <table class="grid">
-      <thead><tr>
-        <th>Invoice #</th><th>Issued</th><th>Delivered</th><th class="num">Proforma alloc.</th>
-        <th class="num">Invoice total</th><th class="num">Prepay credit</th><th class="num">Still due</th>
-        <th class="num">Sales value</th><th>Qty</th><th></th>
-      </tr></thead>
+      <thead><tr><th>Delivery / invoice #</th><th>Date</th><th class="num">Value delivered</th><th>Qty</th><th></th></tr></thead>
       <tbody>
       ${invs.map((i) => {
-        const open = bal[i.id] ? bal[i.id].open : i.actual_total - i.prepay_credit_applied;
         const proof = docFor(d, 'supplier_invoice', i.id);
-        return `<tr class="${i.status === 'pending' ? '' : ''}">
-          <td data-label="Invoice #">${esc(i.invoice_number)} ${i.status === 'pending' ? '<span class="pill amber">pending</span>' : ''} ${proof ? '<span class="pill green">PDF</span>' : ''}</td>
-          <td data-label="Issued">${fdate(i.issue_date)}</td>
-          <td data-label="Delivered">${fdate(i.delivery_date)}</td>
-          <td class="num" data-label="Proforma alloc.">${money(i.proforma_allocated, cur)}</td>
-          <td class="num" data-label="Invoice total">${money(i.actual_total, cur)}</td>
-          <td class="num" data-label="Prepay credit">${money(i.prepay_credit_applied, cur)}</td>
-          <td class="num" data-label="Still due"><b>${money(open, cur)}</b></td>
-          <td class="num" data-label="Sales value">${money(i.customer_sales_value, cur)}</td>
+        return `<tr>
+          <td data-label="Delivery #">${esc(i.invoice_number)} ${i.status === 'pending' ? '<span class="pill amber">pending</span>' : ''} ${proof ? '<span class="pill green">file</span>' : ''}</td>
+          <td data-label="Date">${fdate(i.delivery_date || i.issue_date)}</td>
+          <td class="num" data-label="Value delivered">${money(i.customer_sales_value, cur)}</td>
           <td data-label="Qty">${esc(i.quantity || '—')}</td>
           <td class="num" data-label="">
-            ${canWrite() && i.status !== 'void' ? `<button class="btn sm" data-upload='${uploadAttr('supplier_invoice', i.id)}'>PDF</button>` : ''}
+            ${canWrite() && i.status !== 'void' ? `<button class="btn sm" data-upload='${uploadAttr('supplier_invoice', i.id)}'>File</button>` : ''}
             ${isAdmin() && i.status === 'posted' ? `<button class="btn sm danger" data-void='supplier_invoice:${i.id}'>Void</button>` : ''}
           </td>
         </tr>`;
       }).join('')}
       </tbody>
-    </table>` : `<div class="empty small">No supplier invoices or deliveries recorded yet.</div>`;
-
-  const progress = `
-    <div style="margin-top:16px" class="rowset">
-      ${row('Total delivered (sales value)', money(c.deliveredSalesValue, cur), 'green')}
-      ${row('Delivery progress', pct(c.deliveryPct))}
-      ${c.deliveryOutstanding > 0 ? row('Delivery outstanding', money(c.deliveryOutstanding, cur), 'amber') : ''}
-      ${c.overDelivery > 0 ? row('Over-delivery', money(c.overDelivery, cur), 'red') : ''}
-    </div>`;
-  const addBtn = !ro && canWrite() ? `<button class="btn sm primary" data-next="add-supp-inv">Add supplier invoice / delivery</button>` : '';
-  return card('Supplier invoices & deliveries', body + progress, addBtn);
+    </table>`;
 }
+function sectionSupplierInvoices() { return ''; /* deliveries now shown in their own card */ }
 
 /* ---- Section 5: supplier payments ---- */
 function sectionSupplierPayments(d, cur, ro) {
+  const c = d.computed;
   const pays = d.supplierPayments.filter((p) => p.status !== 'void');
-  const invName = {}; d.supplierInvoices.forEach((i) => (invName[i.id] = i.invoice_number));
   const rows = pays.length ? pays.map((p) => `
     <tr>
       <td data-label="Date">${fdate(p.date)} ${p.status === 'pending' ? '<span class="pill amber">pending</span>' : ''}</td>
-      <td data-label="Type">${p.is_prepayment ? '<span class="tag">prepayment</span>' : 'Invoice ' + esc(invName[p.invoice_id] || '#' + p.invoice_id)}</td>
       <td class="num" data-label="Amount">${money(p.amount, cur)}</td>
       <td data-label="Ref">${esc(p.bank_ref || '—')}</td>
       <td class="num" data-label="">
         ${canWrite() && p.status !== 'void' ? `<button class="btn sm" data-upload='${uploadAttr('supplier_payment', p.id)}'>Proof</button>` : ''}
         ${isAdmin() && p.status === 'posted' ? `<button class="btn sm danger" data-void='supplier_payment:${p.id}'>Void</button>` : ''}
       </td>
-    </tr>`).join('') : `<tr><td colspan="5" class="muted small">No supplier payments recorded yet.</td></tr>`;
+    </tr>`).join('') : `<tr><td colspan="4" class="muted small">No payments to the supplier yet.</td></tr>`;
+  const head = `<div class="rowset" style="margin-bottom:12px">
+      ${row('Owed to supplier (proforma)', money(c.supplierOwed, cur))}
+      ${row('Paid so far', money(c.totalPaidToSupplier, cur), 'green')}
+      ${row('Open to be paid', money(c.supplierOpenToPay, cur), c.supplierOpenToPay > 0 ? 'amber' : 'green')}
+      ${c.supplierOverpaid > 0 ? row('Overpaid', money(c.supplierOverpaid, cur), 'red') : ''}
+    </div>`;
+  const table = `<table class="grid"><thead><tr><th>Date</th><th class="num">Amount</th><th>Ref</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  const addBtn = !ro && canWrite() ? `<button class="btn sm primary" data-next="add-supp-pay">Record payment to supplier</button>` : '';
+  return card('Payments to supplier', head + table, addBtn);
+}
 
-  const table = `<table class="grid"><thead><tr><th>Date</th><th>Applied to</th><th class="num">Amount</th><th>Ref</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
-  const inner = collapsible('supp-pay-hist', `Payment history (${pays.length})`, table, true);
-  const addBtn = !ro && canWrite() ? `<div class="btn-row"><button class="btn sm primary" data-next="add-supp-pay">Pay supplier invoice</button><button class="btn sm" data-next="add-supp-prepay">Record supplier prepayment</button></div>` : '';
-  return card('Supplier payments', inner, addBtn);
+/* ---- Delivery card (separate layer, no money) ---- */
+function deliveryCard(d, cur) {
+  const c = d.computed;
+  const pctW = Math.min(100, c.deliveryPct);
+  const ro = d.deal.status !== 'active';
+  const body = `
+    <div class="dl-head">
+      <div><div class="dl-big green">${money(c.deliveredValue, cur)}</div>
+        <div class="meta">delivered of ${money(c.deliveryTarget, cur)} order · ${pct(c.deliveryPct)}</div></div>
+      <div class="dl-tags">
+        ${c.deliveryOutstanding > 0.005 ? `<span class="flow-tag amber">Awaiting ${money(c.deliveryOutstanding, cur)}</span>` : `<span class="flow-tag green">Fully delivered</span>`}
+        ${c.overDelivery > 0.005 ? `<span class="flow-tag red">Over-delivered ${money(c.overDelivery, cur)}</span>` : ''}
+        <span class="tag">${c.deliveryCount} batch${c.deliveryCount === 1 ? '' : 'es'}</span>
+      </div>
+    </div>
+    <div class="progress ${c.overDelivery > 0 ? 'over' : ''}" style="height:10px;margin:10px 0 14px"><span style="width:${pctW}%"></span></div>
+    ${deliveriesTable(d, cur)}`;
+  const addBtn = !ro && canWrite() ? `<button class="btn sm primary" data-next="add-supp-inv">＋ Add a delivery</button>` : '';
+  return card('Deliveries — goods received (does not affect money)', body, addBtn);
 }
 
 /* ---- Section 6: closeout ---- */
 function sectionCloseout(c, cur, deal) {
-  const reconciled =
-    c.customerBalance < 0.005 && c.supplierInvoicesOpen < 0.005 &&
-    c.deliveryOutstanding < 0.005 && c.supplierFundingShortfall < 0.005;
-  const profitCls = c.profitVsTarget < -0.005 ? 'red' : (c.profitVsTarget > 0.005 ? 'green' : '');
+  const reconciled = c.customerBalance < 0.005 && c.supplierOpenToPay < 0.005 && c.companyMoneyFronted < 0.005;
   const body = `
     <div class="rowset">
-      <div class="r"><div class="k"><b>Customer</b></div><div class="v"></div></div>
-      ${row('Balance still owed', money(c.customerBalance, cur), c.customerBalance > 0 ? 'amber' : 'green')}
-      ${row('Overpayment / credit', money(c.customerOverpayment, cur), c.customerOverpayment > 0 ? 'amber' : '')}
+      <div class="r"><div class="k"><b>Client</b></div><div class="v"></div></div>
+      ${row('Still to collect', money(c.customerBalance, cur), c.customerBalance > 0 ? 'amber' : 'green')}
+      ${row('Overpaid by client', money(c.customerOverpayment, cur), c.customerOverpayment > 0 ? 'amber' : '')}
       <div class="r"><div class="k"><b>Supplier</b></div><div class="v"></div></div>
-      ${row('Invoices still open', money(c.supplierInvoicesOpen, cur), c.supplierInvoicesOpen > 0 ? 'amber' : 'green')}
-      ${row('Supplier overpayment', money(c.supplierOverpayment, cur), c.supplierOverpayment > 0 ? 'amber' : '')}
-      ${row('Cost still unfunded', money(c.supplierFundingShortfall, cur), c.supplierFundingShortfall > 0 ? 'red' : 'green')}
-      ${row('Company money used to fund supplier', money(c.companyMoneyUsed, cur), c.companyMoneyUsed > 0 ? 'red' : '')}
-      ${row('Unused supplier prepayment', money(c.supplierPrepayUnused, cur), c.supplierPrepayUnused > 0 ? 'blue' : '')}
-      ${row('Over-applied supplier prepayment', money(c.supplierPrepayOverApplied, cur), c.supplierPrepayOverApplied > 0 ? 'red' : '')}
-      <div class="r"><div class="k"><b>Delivery</b></div><div class="v"></div></div>
-      ${row('Still outstanding', money(c.deliveryOutstanding, cur), c.deliveryOutstanding > 0 ? 'amber' : 'green')}
-      ${row('Over-delivery', money(c.overDelivery, cur), c.overDelivery > 0 ? 'red' : '')}
-      <div class="r"><div class="k"><b>Income</b></div><div class="v"></div></div>
-      ${row('Already kept', money(c.incomeKept, cur), 'green')}
-      ${row('Still expected', money(c.incomeRemaining, cur))}
-      ${row('Forecast profit vs 4% target', money(c.forecastProfit, cur) + ' / ' + money(c.targetProfit, cur) + '  (' + money(c.profitVsTarget, cur) + ')', profitCls)}
+      ${row('Open to be paid', money(c.supplierOpenToPay, cur), c.supplierOpenToPay > 0 ? 'amber' : 'green')}
+      ${row('Overpaid to supplier', money(c.supplierOverpaid, cur), c.supplierOverpaid > 0 ? 'amber' : '')}
+      <div class="r"><div class="k"><b>Our position</b></div><div class="v"></div></div>
+      ${row('Cash held in-house', money(c.heldInHouse, cur))}
+      ${row('Our income (of margin)', money(c.incomeKept, cur) + ' / ' + money(c.incomeExpectedTotal, cur), 'gold')}
+      ${row(c.supplierShareHeld >= 0 ? "Supplier's share still held" : 'Company money fronted', money(Math.abs(c.supplierShareHeld), cur), c.supplierShareHeld >= 0 ? '' : 'red')}
+      <div class="r"><div class="k"><b>Delivery (tracking only)</b></div><div class="v"></div></div>
+      ${row('Delivered', money(c.deliveredValue, cur) + ' (' + pct(c.deliveryPct) + ')', 'green')}
+      ${c.deliveryOutstanding > 0 ? row('Awaiting delivery', money(c.deliveryOutstanding, cur), 'amber') : ''}
     </div>
-    ${reconciled ? `<div class="alert info" style="margin-top:14px">Everything reconciles. ${isAdmin() && deal.status === 'active' ? 'You can mark this deal complete.' : ''}</div>`
-      : `<div class="alert warn" style="margin-top:14px">Not fully reconciled — resolve the amber and red rows above before completing.</div>`}
-    ${isAdmin() && deal.status === 'active' ? `<button class="btn primary" id="closeout-complete" ${reconciled ? '' : ''} style="margin-top:12px">Mark deal complete</button>` : ''}
+    ${reconciled ? `<div class="alert info" style="margin-top:14px">Money reconciles — client fully paid and supplier fully paid. Deliveries are tracked separately and don't block completion.</div>`
+      : `<div class="alert warn" style="margin-top:14px">Not fully settled — collect the client balance and pay the supplier to close.</div>`}
+    ${isAdmin() && deal.status === 'active' ? `<button class="btn primary" id="closeout-complete" style="margin-top:12px">Mark deal complete</button>` : ''}
   `;
   return `<div class="card" id="closeout"><div class="card-h"><h3>Closeout</h3></div><div class="card-b">${body}</div></div>`;
 }
@@ -678,10 +670,7 @@ function wireDeal(d) {
   }));
   // Simple quick actions
   bind('q-received', () => custPayModal(deal, d.computed));
-  bind('q-paid', () => {
-    const openInv = d.computed.invoiceBalances.some((b) => b.open > 0.005);
-    suppPayModal(deal, d, !openInv); // pay an open invoice, or record a prepayment if none yet
-  });
+  bind('q-paid', () => suppPayModal(deal, d));
   bind('q-delivery', () => suppInvModal(deal, d.computed));
   bind('details-toggle', (ev) => {
     const t = document.getElementById('details-toggle');
@@ -724,8 +713,7 @@ function quickUpload(dealId, category) {
 function handleNext(code, d) {
   const deal = d.deal;
   if (code === 'add-cust-pay') return custPayModal(deal, d.computed);
-  if (code === 'add-supp-prepay') return suppPayModal(deal, d, true);
-  if (code === 'add-supp-pay') return suppPayModal(deal, d, false);
+  if (code === 'add-supp-pay') return suppPayModal(deal, d);
   if (code === 'add-supp-inv') return suppInvModal(deal, d.computed);
   if (code === 'scroll-closeout') return document.getElementById('closeout').scrollIntoView({ behavior: 'smooth' });
   if (code === 'complete') return completeDeal(deal);
@@ -798,82 +786,61 @@ function custPayModal(deal, c) {
 }
 
 /* ---- supplier payment / prepayment modal ---- */
-function suppPayModal(deal, d, isPrepay) {
+function suppPayModal(deal, d) {
   const cur = deal.currency, c = d.computed;
-  const bal = {}; c.invoiceBalances.forEach((b) => (bal[b.id] = b.open));
-  const openInvs = d.supplierInvoices.filter((i) => i.status === 'posted' && (bal[i.id] || 0) > 0.005);
-  const preselect = openInvs[0];
-  const invField = isPrepay ? '' : `
-    <div class="field"><label>Supplier invoice</label>
-      <select id="sp_inv">${openInvs.map((i) => `<option value="${i.id}" data-open="${bal[i.id]}">${esc(i.invoice_number)} — open ${money(bal[i.id], cur)}</option>`).join('')}</select>
-      ${openInvs.length ? '' : '<div class="hint">No open invoices to pay.</div>'}</div>`;
   const body = `
-    ${invField}
+    <div class="alert info">Owed to supplier: <b>${money(c.supplierOwed, cur)}</b> · Paid so far: <b>${money(c.totalPaidToSupplier, cur)}</b> · Open: <b>${money(c.supplierOpenToPay, cur)}</b></div>
     <div class="form-row">
-      <div class="field"><label>Amount</label><input id="sp_amt" inputmode="decimal" value="${!isPrepay && preselect ? bal[preselect.id] : ''}" />
-        ${!isPrepay ? '<div class="hint">Cannot exceed the invoice open balance. Partial payments allowed.</div>' : ''}</div>
+      <div class="field"><label>Amount paid to supplier</label><input id="sp_amt" inputmode="decimal" value="${c.supplierOpenToPay > 0 ? c.supplierOpenToPay : ''}" autofocus />
+        <div class="hint">Partial payments are fine. This is independent of deliveries.</div></div>
       <div class="field"><label>Date</label><input id="sp_date" type="date" value="${today()}" /></div>
     </div>
-    <div class="field"><label>Bank reference</label><input id="sp_ref" /></div>
-    <div class="field"><label>Notes</label><textarea id="sp_notes"></textarea></div>
+    <button class="collapse-h" id="sp_more"><span class="chev">▶</span> More details</button>
+    <div id="sp_more_b" class="hidden" style="margin-top:8px">
+      <div class="field"><label>Bank reference</label><input id="sp_ref" /></div>
+      <div class="field"><label>Notes</label><textarea id="sp_notes"></textarea></div>
+    </div>
     <div id="sp_err" class="alert err hidden"></div>`;
-  const footer = `<button class="btn" id="sp_cancel">Cancel</button><button class="btn primary" id="sp_save" ${!isPrepay && !openInvs.length ? 'disabled' : ''}>Save</button>`;
-  const close = openModal(isPrepay ? 'Record supplier prepayment' : 'Pay supplier invoice', body, footer);
+  const footer = `<button class="btn" id="sp_cancel">Cancel</button><button class="btn primary" id="sp_save">Save payment</button>`;
+  const close = openModal(isOffice() ? 'Propose supplier payment' : 'Record payment to supplier', body, footer);
   document.getElementById('sp_cancel').onclick = close;
-  if (!isPrepay) {
-    const sel = document.getElementById('sp_inv');
-    if (sel) sel.onchange = () => { document.getElementById('sp_amt').value = sel.selectedOptions[0].dataset.open; };
-  }
+  document.getElementById('sp_more').onclick = (e) => { e.currentTarget.classList.toggle('open'); document.getElementById('sp_more_b').classList.toggle('hidden'); };
   document.getElementById('sp_save').onclick = async () => {
-    const payload = {
-      amount: v('sp_amt'), date: v('sp_date'), bank_ref: v('sp_ref'), notes: v('sp_notes'),
-      is_prepayment: isPrepay ? 1 : 0,
-      invoice_id: isPrepay ? null : Number(document.getElementById('sp_inv').value),
-    };
+    const payload = { amount: v('sp_amt'), date: v('sp_date'), bank_ref: v('sp_ref'), notes: v('sp_notes') };
     try {
       const r = await api('/deals/' + deal.id + '/supplier-payments', { method: 'POST', body: payload });
-      close(); ok(r.status === 'pending' ? 'Submitted for approval.' : 'Supplier payment recorded.'); renderDeal();
+      close(); ok(r.status === 'pending' ? 'Submitted for approval.' : 'Payment recorded.'); renderDeal();
     } catch (e) { showErr('sp_err', e.message); }
   };
 }
 
-/* ---- supplier invoice / delivery modal ---- */
+/* ---- delivery modal (informational only, no money) ---- */
 function suppInvModal(deal, c) {
   const cur = deal.currency;
   const body = `
+    <div class="alert info">A delivery is just a record that goods arrived. It does <b>not</b> change any payment.</div>
     <div class="form-row">
-      <div class="field"><label>Supplier invoice number</label><input id="si_num" autofocus /></div>
-      <div class="field"><label>Proforma value allocated to this batch</label><input id="si_prof" inputmode="decimal" />
-        <div class="hint">Documented allocation — not estimated automatically.</div></div>
+      <div class="field"><label>Delivery / invoice number</label><input id="si_num" autofocus /></div>
+      <div class="field"><label>Delivery date</label><input id="si_deliv" type="date" value="${today()}" /></div>
     </div>
     <div class="form-row">
-      <div class="field"><label>Issue date</label><input id="si_issue" type="date" value="${today()}" /></div>
-      <div class="field"><label>Delivery date</label><input id="si_deliv" type="date" /></div>
-    </div>
-    <div class="form-row">
-      <div class="field"><label>Actual supplier invoice total</label><input id="si_actual" inputmode="decimal" /></div>
-      <div class="field"><label>Supplier prepayment credit applied</label><input id="si_credit" inputmode="decimal" value="0" />
-        <div class="hint">Unused credit available: ${money(c.supplierPrepayUnused, cur)}</div></div>
-    </div>
-    <div class="form-row">
-      <div class="field"><label>Customer sales value delivered</label><input id="si_sales" inputmode="decimal" /></div>
-      <div class="field"><label>Quantity delivered</label><input id="si_qty" placeholder="e.g. 5,000 units" /></div>
+      <div class="field"><label>Value of goods delivered</label><input id="si_sales" inputmode="decimal" />
+        <div class="hint">Order value ${money(deal.invoice_total, cur)} · delivered so far ${money(c.deliveredValue, cur)}</div></div>
+      <div class="field"><label>Quantity (optional)</label><input id="si_qty" placeholder="e.g. 5,000 units" /></div>
     </div>
     <div class="field"><label>Notes</label><textarea id="si_notes"></textarea></div>
     <div id="si_err" class="alert err hidden"></div>`;
-  const footer = `<button class="btn" id="si_cancel">Cancel</button><button class="btn primary" id="si_save">Save invoice / delivery</button>`;
-  const close = openModal(isOffice() ? 'Propose supplier invoice' : 'Add supplier invoice / delivery', body, footer);
+  const footer = `<button class="btn" id="si_cancel">Cancel</button><button class="btn primary" id="si_save">Save delivery</button>`;
+  const close = openModal(isOffice() ? 'Propose delivery' : 'Add a delivery', body, footer);
   document.getElementById('si_cancel').onclick = close;
   document.getElementById('si_save').onclick = async () => {
     const payload = {
-      invoice_number: v('si_num'), proforma_allocated: v('si_prof'),
-      issue_date: v('si_issue'), delivery_date: v('si_deliv'),
-      actual_total: v('si_actual'), prepay_credit_applied: v('si_credit'),
+      invoice_number: v('si_num'), delivery_date: v('si_deliv'),
       customer_sales_value: v('si_sales'), quantity: v('si_qty'), notes: v('si_notes'),
     };
     try {
       const r = await api('/deals/' + deal.id + '/supplier-invoices', { method: 'POST', body: payload });
-      close(); ok(r.status === 'pending' ? 'Submitted for approval.' : 'Supplier invoice recorded.'); renderDeal();
+      close(); ok(r.status === 'pending' ? 'Submitted for approval.' : 'Delivery recorded.'); renderDeal();
     } catch (e) { showErr('si_err', e.message); }
   };
 }
@@ -1032,11 +999,13 @@ async function renderUsers() {
       </td>
     </tr>`).join('');
   shell('User access', card('Users', `
+    <div class="alert info" style="margin-bottom:14px">Passwords are stored encrypted and can never be shown — not even to administrators. To give someone access, use <b>Reset password</b>: you'll see and can copy the new password at that moment.</div>
     <table class="grid"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>`,
-    `<button class="btn sm primary" id="adduser">Add user</button>`));
+    `<button class="btn sm primary" id="adduser">Add user</button>`)
+    + card('Activity log', `<div id="audit-global"><div class="meta">Loading…</div></div>`));
   document.getElementById('adduser').onclick = addUserModal;
   document.querySelectorAll('[data-role]').forEach((sel) => (sel.onchange = async () => {
-    try { await api('/users/' + sel.dataset.role, { method: 'PATCH', body: { role: sel.value } }); ok('Role updated.'); }
+    try { await api('/users/' + sel.dataset.role, { method: 'PATCH', body: { role: sel.value } }); ok('Role updated.'); loadAuditLog(); }
     catch (e) { err(e.message); }
   }));
   document.querySelectorAll('[data-toggle]').forEach((b) => (b.onclick = async () => {
@@ -1044,15 +1013,57 @@ async function renderUsers() {
     try { await api('/users/' + id, { method: 'PATCH', body: { active: Number(active) } }); renderUsers(); } catch (e) { err(e.message); }
   }));
   document.querySelectorAll('[data-pw]').forEach((b) => (b.onclick = () => resetPwModal(b.dataset.pw)));
+  loadAuditLog();
+}
+
+async function loadAuditLog() {
+  const box = document.getElementById('audit-global');
+  if (!box) return;
+  try {
+    const rows = await api('/audit/recent?limit=150');
+    if (!rows.length) { box.innerHTML = '<div class="meta">No activity yet.</div>'; return; }
+    const pretty = (a) => {
+      let extra = '';
+      try { const s = JSON.parse(a.detail || '{}'); if (s.amount) extra = money(s.amount); if (s.ref) extra = s.ref; if (s.name) extra = s.name; if (s.reason) extra = s.reason; } catch {}
+      return extra;
+    };
+    box.innerHTML = `<table class="grid"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Deal</th><th>Details</th></tr></thead><tbody>${
+      rows.map((a) => `<tr>
+        <td data-label="When" class="meta">${esc(String(a.created_at).replace('T', ' ').slice(0, 16))}</td>
+        <td data-label="Who">${esc(a.actor_name || '—')}</td>
+        <td data-label="Action">${esc(String(a.action).replace(/_/g, ' '))}</td>
+        <td data-label="Deal">${a.deal_ref ? esc(a.deal_ref) : '—'}</td>
+        <td data-label="Details" class="meta">${esc(pretty(a))}</td>
+      </tr>`).join('')
+    }</tbody></table>`;
+  } catch (e) { box.innerHTML = '<div class="meta">Could not load the log.</div>'; }
+}
+
+/* password field with show/generate controls */
+function pwField(id) {
+  return `<div class="field"><label>Password</label>
+    <div class="pw-row">
+      <input id="${id}" type="text" autocomplete="new-password" />
+      <button type="button" class="btn sm" data-gen="${id}">Generate</button>
+    </div>
+    <div class="hint">Shown in clear text so you can copy it. It will be encrypted on save and cannot be viewed again.</div></div>`;
+}
+function wireGen() {
+  document.querySelectorAll('[data-gen]').forEach((b) => (b.onclick = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    let p = ''; for (let i = 0; i < 14; i++) p += chars[Math.floor(Math.random() * chars.length)];
+    document.getElementById(b.dataset.gen).value = p;
+  }));
 }
 function addUserModal() {
   const body = `
     <div class="field"><label>Full name</label><input id="au_name" /></div>
     <div class="field"><label>Username</label><input id="au_user" /></div>
-    <div class="field"><label>Temporary password</label><input id="au_pw" /></div>
+    ${pwField('au_pw')}
     <div class="field"><label>Role</label><select id="au_role"><option value="office">Office worker</option><option value="admin">Administrator</option><option value="visitor">Visitor</option></select></div>
     <div id="au_err" class="alert err hidden"></div>`;
   const close = openModal('Add user', body, `<button class="btn" id="au_cancel">Cancel</button><button class="btn primary" id="au_save">Create user</button>`);
+  wireGen();
   document.getElementById('au_cancel').onclick = close;
   document.getElementById('au_save').onclick = async () => {
     try { await api('/users', { method: 'POST', body: { name: v('au_name'), username: v('au_user'), password: v('au_pw'), role: v('au_role') } }); close(); ok('User created.'); renderUsers(); }
@@ -1060,11 +1071,12 @@ function addUserModal() {
   };
 }
 function resetPwModal(id) {
-  const body = `<div class="field"><label>New password</label><input id="rp_pw" autofocus /></div><div id="rp_err" class="alert err hidden"></div>`;
+  const body = `${pwField('rp_pw')}<div id="rp_err" class="alert err hidden"></div>`;
   const close = openModal('Reset password', body, `<button class="btn" id="rp_cancel">Cancel</button><button class="btn primary" id="rp_save">Set password</button>`);
+  wireGen();
   document.getElementById('rp_cancel').onclick = close;
   document.getElementById('rp_save').onclick = async () => {
-    try { await api('/users/' + id, { method: 'PATCH', body: { password: v('rp_pw') } }); close(); ok('Password reset.'); }
+    try { await api('/users/' + id, { method: 'PATCH', body: { password: v('rp_pw') } }); close(); ok('Password set. Copy it now — it cannot be shown again.'); }
     catch (e) { showErr('rp_err', e.message); }
   };
 }
@@ -1110,11 +1122,67 @@ function purgeModal(id, ref) {
   };
 }
 
+/* ================= TOTAL FINANCES ================= */
+async function renderReports() {
+  let r;
+  try { r = await api('/reports'); } catch (e) { return err(e.message); }
+  const t = r.totals;
+  const maxM = Math.max(1, ...r.months.map((m) => Math.max(m.in, m.out)));
+  const monthBars = r.months.length ? r.months.map((m) => `
+    <div class="mrow">
+      <div class="mlabel">${esc(m.m)}</div>
+      <div class="mbars">
+        <div class="mbar in" style="width:${Math.round(m.in / maxM * 100)}%" title="In ${money(m.in)}"></div>
+        <div class="mbar out" style="width:${Math.round(m.out / maxM * 100)}%" title="Out ${money(m.out)}"></div>
+      </div>
+      <div class="mvals"><span class="green tnum">${money(m.in)}</span> <span class="muted">/</span> <span class="blue tnum">${money(m.out)}</span></div>
+    </div>`).join('') : '<div class="meta">No payments recorded yet.</div>';
+
+  const dealRows = r.deals.map((d) => `
+    <tr>
+      <td data-label="Deal"><a href="#" data-open-deal="${d.id}">${esc(d.ref)}</a> — ${esc(d.title)}</td>
+      <td class="num" data-label="Received">${money(d.received, d.currency)}</td>
+      <td class="num" data-label="Paid">${money(d.paid, d.currency)}</td>
+      <td class="num" data-label="Income">${money(d.income, d.currency)}</td>
+      <td class="num" data-label="Delivered">${money(d.delivered, d.currency)}</td>
+      <td data-label="Status"><span class="pill ${d.status === 'active' ? 'blue' : 'green'}">${esc(d.status)}</span></td>
+    </tr>`).join('');
+
+  shell('Total Finances', `
+    <div class="stats">
+      <div class="stat"><div class="label">Money in (from clients)</div><div class="value green tnum">${money(t.moneyIn)}</div></div>
+      <div class="stat"><div class="label">Money out (to suppliers)</div><div class="value blue tnum">${money(t.moneyOut)}</div></div>
+      <div class="stat"><div class="label">Net cash held now</div><div class="value gold tnum">${money(t.netCashHeld)}</div></div>
+      <div class="stat"><div class="label">Our income kept</div><div class="value tnum">${money(t.incomeKept)}</div><div class="stat-sub">of ${money(t.incomeExpected)} expected</div></div>
+    </div>
+
+    <div class="rep-grid">
+      ${card('Highlights', `
+        <div class="rowset">
+          ${row('Deals (active / completed)', t.activeCount + ' / ' + t.completedCount)}
+          ${row('Still to collect from clients', money(t.toCollect), t.toCollect > 0 ? 'amber' : 'green')}
+          ${row('Still to pay suppliers', money(t.toPaySupplier), t.toPaySupplier > 0 ? 'amber' : 'green')}
+          ${row('Total delivered (goods)', money(t.delivered), 'green')}
+          ${r.biggest ? row('Biggest deal', esc(r.biggest.ref) + ' · ' + money(r.biggest.invoiceTotal, r.biggest.currency)) : ''}
+          ${r.topIncome ? row('Most profitable deal', esc(r.topIncome.ref) + ' · ' + money(r.topIncome.income, r.topIncome.currency)) : ''}
+        </div>`)}
+      ${card('Money in vs out by month', `<div class="mchart">${monthBars}</div>
+        <div class="mlegend"><span class="green">■</span> In &nbsp; <span class="blue">■</span> Out</div>`)}
+    </div>
+
+    ${card('All deals', `<table class="grid">
+      <thead><tr><th>Deal</th><th class="num">Received</th><th class="num">Paid</th><th class="num">Income</th><th class="num">Delivered</th><th>Status</th></tr></thead>
+      <tbody>${dealRows || '<tr><td colspan="6" class="muted small">No deals yet.</td></tr>'}</tbody></table>`)}
+  `);
+  document.querySelectorAll('[data-open-deal]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); go('deal', { id: Number(a.dataset.openDeal) }); }));
+}
+
 /* ================= ROUTER ================= */
 function render() {
   if (!State.user) return renderLogin();
   const r = State.route.name;
   if (r === 'deals') return renderDeals();
+  if (r === 'reports') return renderReports();
   if (r === 'deal') return renderDeal();
   if (r === 'approvals') return isAdmin() ? renderApprovals() : go('deals');
   if (r === 'users') return isAdmin() ? renderUsers() : go('deals');
