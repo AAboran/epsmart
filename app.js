@@ -199,34 +199,36 @@ function dealCard(d) {
   const c = d.computed, cur = d.currency;
   const na = d.nextAction;
   const naClass = na.priority === 0 ? 'attn' : (na.code === 'complete_deal' ? 'done' : '');
-  const prepay = c.custPrepayReq > 0
-    ? `<span class="pill ${c.prepayRemaining <= 0 ? 'green' : 'amber'}">${c.prepayRemaining <= 0 ? 'Prepaid' : money(c.prepayRemaining, cur) + ' due'}</span>`
-    : `<span class="pill gray">No prepayment</span>`;
-  const over = Math.min(100, c.deliveryPct);
+  const paidToSupplier = (c.supplierInvoicePaid || 0) + (c.supplierPrepaySent || 0);
+  const supplierOwed = c.supplierInvoicesGross > 0 ? c.supplierInvoicesGross : d.proforma_total;
+  const recvPct = d.invoice_total > 0 ? Math.min(100, c.totalReceived / d.invoice_total * 100) : 0;
+  const paidPct = supplierOwed > 0 ? Math.min(100, paidToSupplier / supplierOwed * 100) : 0;
   return `
     <div class="deal-card" data-deal="${d.id}" tabindex="0" role="button">
-      <div>
+      <div class="dc-main">
         <div class="ref">${esc(d.ref)} · <span class="pill ${d.status === 'active' ? 'blue' : d.status === 'completed' ? 'green' : 'gray'}">${esc(d.status)}</span></div>
         <div class="title">${esc(d.title)}</div>
         <div class="parties">${esc(d.customer_name)} &nbsp;→&nbsp; ${esc(d.supplier_name)}</div>
-        <div class="deal-grid">
-          <div class="fig"><div class="k">Supplier proforma</div><div class="v tnum">${money(d.proforma_total, cur)}</div></div>
-          <div class="fig"><div class="k">Customer invoice</div><div class="v tnum">${money(d.invoice_total, cur)}</div></div>
-          <div class="fig"><div class="k">Received</div><div class="v tnum green">${money(c.totalReceived, cur)}</div></div>
-          <div class="fig"><div class="k">Balance to collect</div><div class="v big blue tnum">${money(c.customerBalance, cur)}</div></div>
-          <div class="fig"><div class="k">Open supplier inv.</div><div class="v tnum">${money(c.supplierInvoicesOpen, cur)} <span class="meta">(${c.openInvoiceCount})</span></div></div>
-          <div class="fig"><div class="k">Income kept</div><div class="v tnum green">${money(c.incomeKept, cur)}</div></div>
-          <div class="fig"><div class="k">Income expected</div><div class="v tnum">${money(c.incomeRemaining, cur)}</div></div>
-          <div class="fig">
-            <div class="k">Delivery ${pct(c.deliveryPct)}</div>
-            <div class="progress ${c.overDelivery > 0 ? 'over' : ''}"><span style="width:${over}%"></span></div>
+        <div class="dc-bars">
+          <div class="dc-bar">
+            <div class="dc-bar-top"><span>Received from client</span><b class="green">${money(c.totalReceived, cur)}</b></div>
+            <div class="progress"><span style="width:${recvPct}%"></span></div>
+            ${c.customerBalance > 0.005 ? `<div class="meta">still to collect ${money(c.customerBalance, cur)}</div>` : `<div class="meta green">fully collected</div>`}
+          </div>
+          <div class="dc-bar">
+            <div class="dc-bar-top"><span>Paid to supplier</span><b class="blue">${money(paidToSupplier, cur)}</b></div>
+            <div class="progress blue"><span style="width:${paidPct}%"></span></div>
+            ${c.supplierInvoicesOpen > 0.005 ? `<div class="meta">still to pay ${money(c.supplierInvoicesOpen, cur)}</div>` : `<div class="meta green">nothing open</div>`}
           </div>
         </div>
-        <div style="margin-top:12px">${prepay}${c.supplierFundingShortfall > 0 ? ` <span class="pill red">Funding gap ${money(c.supplierFundingShortfall, cur)}</span>` : ''}</div>
       </div>
-      <div class="next-action ${naClass}">
-        <div class="k">Next action</div>
-        <div class="v">${esc(na.label)}</div>
+      <div class="dc-side">
+        <div class="dc-income"><div class="k">Our income (4%)</div><div class="v green">${money(c.incomeKept, cur)}</div></div>
+        <div class="next-action ${naClass}">
+          <div class="k">Next action</div>
+          <div class="v">${esc(na.label)}</div>
+        </div>
+        ${c.supplierFundingShortfall > 0.005 ? `<span class="pill red">Funding gap ${money(c.supplierFundingShortfall, cur)}</span>` : ''}
       </div>
     </div>`;
 }
@@ -295,38 +297,95 @@ async function renderDeal() {
   const fundBanner = c.supplierFundingShortfall > 0
     ? `<div class="alert err"><b>Funding difference.</b> Open supplier cost exceeds the reserve held by ${money(c.supplierFundingShortfall, cur)}. Forecast profit ${money(c.forecastProfit, cur)} vs 4% target ${money(c.targetProfit, cur)} (${money(c.profitVsTarget, cur)}).</div>` : '';
 
+  const paidToSupplier = (c.supplierInvoicePaid || 0) + (c.supplierPrepaySent || 0);
+  const supplierOwed = c.supplierInvoicesGross > 0 ? c.supplierInvoicesGross : deal.proforma_total;
+  const recvPct = deal.invoice_total > 0 ? Math.min(100, c.totalReceived / deal.invoice_total * 100) : 0;
+  const paidPct = supplierOwed > 0 ? Math.min(100, paidToSupplier / supplierOwed * 100) : 0;
+  const incPct = c.incomeExpectedTotal > 0 ? Math.min(100, c.incomeKept / c.incomeExpectedTotal * 100) : 0;
+
   shell(deal.ref, `
     ${roBanner}${pendBanner}${fundBanner}
     <div class="deal-head">
       <h2>${esc(deal.title)}</h2>
       <span class="pill ${deal.status === 'active' ? 'blue' : deal.status === 'completed' ? 'green' : 'gray'}">${esc(deal.status)}</span>
     </div>
-    <div class="parties muted" style="margin-bottom:16px">${esc(deal.customer_name)} &nbsp;→&nbsp; ${esc(deal.supplier_name)}</div>
+    <div class="parties muted" style="margin-bottom:6px">${esc(deal.customer_name)} &nbsp;→&nbsp; ${esc(deal.supplier_name)}</div>
+    ${!ro ? `<div class="nextline"><span class="nextline-k">Next:</span> ${esc(na.label)}</div>` : ''}
 
-    <div class="big-next ${naClass}" style="margin-bottom:18px">
-      <div><div class="k">Next step</div><div class="v">${esc(na.label)}</div></div>
-      ${!ro && canWrite() ? nextStepButton(na, deal) : ''}
+    <!-- MONEY PICTURE: Client -> Us -> Supplier -->
+    <div class="flow">
+      <div class="flow-node">
+        <div class="flow-role">Client</div>
+        <div class="flow-name">${esc(deal.customer_name)}</div>
+        <div class="flow-big green">${money(c.totalReceived, cur)}</div>
+        <div class="flow-sub">received of ${money(deal.invoice_total, cur)} invoiced</div>
+        <div class="progress"><span style="width:${recvPct}%"></span></div>
+        ${c.customerBalance > 0.005 ? `<div class="flow-tag amber">Still to collect ${money(c.customerBalance, cur)}</div>` : `<div class="flow-tag green">Fully collected</div>`}
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node europa">
+        <div class="flow-role">Europa · us</div>
+        <div class="flow-name">Our income &nbsp;(4%)</div>
+        <div class="flow-big gold">${money(c.incomeKept, cur)}</div>
+        <div class="flow-sub">of ${money(c.incomeExpectedTotal, cur)} expected</div>
+        <div class="progress gold"><span style="width:${incPct}%"></span></div>
+        ${c.supplierFundingShortfall > 0.005 ? `<div class="flow-tag red">Funding gap ${money(c.supplierFundingShortfall, cur)}</div>` : ''}
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">
+        <div class="flow-role">Supplier</div>
+        <div class="flow-name">${esc(deal.supplier_name)}</div>
+        <div class="flow-big blue">${money(paidToSupplier, cur)}</div>
+        <div class="flow-sub">paid of ${money(supplierOwed, cur)} owed</div>
+        <div class="progress blue"><span style="width:${paidPct}%"></span></div>
+        ${c.supplierInvoicesOpen > 0.005 ? `<div class="flow-tag amber">Still to pay ${money(c.supplierInvoicesOpen, cur)}</div>` : `<div class="flow-tag green">Nothing open</div>`}
+      </div>
     </div>
 
-    <div class="headline-grid" style="margin-bottom:20px">
-      ${fig('Supplier proforma', money(deal.proforma_total, cur))}
-      ${fig('Customer invoice', money(deal.invoice_total, cur))}
-      ${fig('Customer paid', money(c.totalApplied, cur), 'green')}
-      ${fig('Balance remaining', money(c.customerBalance, cur), 'blue', true)}
-      ${fig('Income kept (4%)', money(c.incomeKept, cur), 'green')}
+    ${!ro && canWrite() ? `
+    <div class="quick-actions">
+      <button class="btn primary big-btn" id="q-received">＋&nbsp; Money received from client</button>
+      <button class="btn big-btn" id="q-paid">＋&nbsp; Money paid to supplier</button>
+      <button class="btn big-btn" id="q-delivery">＋&nbsp; Add a delivery</button>
+    </div>` : ''}
+
+    <!-- 3 DOCUMENT TILES -->
+    <div class="section-title" style="margin:24px 0 12px">Documents — tap a tile to upload</div>
+    <div class="tiles">
+      ${uploadTile(d, 'Invoice to client', 'Customer invoices', '🧾', ro)}
+      ${uploadTile(d, 'Main supplier invoice', 'Supplier commercial invoices', '📄', ro)}
+      ${uploadTile(d, 'Delivery invoices', 'Delivery notes', '🚚', ro)}
     </div>
 
-    ${sectionCustomerPrepay(c, cur, ro)}
-    ${sectionSupplierPrepay(c, cur, ro)}
-    ${sectionCustomerJourney(d, cur, ro)}
-    ${sectionSupplierInvoices(d, cur, ro)}
-    ${sectionSupplierPayments(d, cur, ro)}
-    ${sectionCloseout(c, cur, deal)}
-    ${sectionDocuments(d, cur)}
-    ${sectionAudit()}
+    <!-- OPTIONAL FULL DETAIL -->
+    <button class="collapse-h details-main" id="details-toggle" style="margin-top:26px"><span class="chev">▶</span> Show full details &amp; history</button>
+    <div id="details-body" class="hidden" style="margin-top:14px">
+      ${sectionCustomerPrepay(c, cur, ro)}
+      ${sectionSupplierPrepay(c, cur, ro)}
+      ${sectionCustomerJourney(d, cur, ro)}
+      ${sectionSupplierInvoices(d, cur, ro)}
+      ${sectionSupplierPayments(d, cur, ro)}
+      ${sectionCloseout(c, cur, deal)}
+      ${sectionDocuments(d, cur)}
+      ${sectionAudit()}
+    </div>
   `, actions);
 
   wireDeal(d);
+}
+
+/* Upload tile: whole tile is one click to add a file; shows attached files. */
+function uploadTile(d, title, category, icon, ro) {
+  const files = d.documents.filter((x) => x.category === category);
+  const has = files.length > 0;
+  return `
+    <div class="tile ${has ? 'has' : ''}">
+      <div class="tile-icon">${icon}</div>
+      <div class="tile-title">${esc(title)}</div>
+      <div class="tile-status">${has ? `<span class="pill green">${files.length} file${files.length > 1 ? 's' : ''}</span>` : `<span class="pill gray">None yet</span>`}</div>
+      ${files.length ? `<div class="tile-files">${files.slice(0, 3).map((f) => `<a href="/api/documents/${f.id}/file" target="_blank">${esc(f.original_name)}</a>`).join('')}</div>` : ''}
+      ${!ro && canWrite() ? `<button class="btn sm tile-btn" data-tileupload="${esc(category)}">${has ? 'Add another' : 'Upload'}</button>` : ''}
+    </div>`;
 }
 
 function fig(k, val, cls = '', big = false) {
@@ -593,6 +652,36 @@ function wireDeal(d) {
     try { await api('/documents/' + id, { method: 'PATCH', body: { status } }); ok('Document ' + status + '.'); renderDeal(); }
     catch (e) { err(e.message); }
   }));
+  // Simple quick actions
+  bind('q-received', () => custPayModal(deal, d.computed));
+  bind('q-paid', () => {
+    const openInv = d.computed.invoiceBalances.some((b) => b.open > 0.005);
+    suppPayModal(deal, d, !openInv); // pay an open invoice, or record a prepayment if none yet
+  });
+  bind('q-delivery', () => suppInvModal(deal, d.computed));
+  bind('details-toggle', (ev) => {
+    const t = document.getElementById('details-toggle');
+    t.classList.toggle('open');
+    document.getElementById('details-body').classList.toggle('hidden');
+  });
+  document.querySelectorAll('[data-tileupload]').forEach((b) => (b.onclick = () => quickUpload(deal.id, b.dataset.tileupload)));
+}
+
+/* One-click upload: open the file picker, then send immediately. */
+function quickUpload(dealId, category) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/pdf,image/png,image/jpeg';
+  input.onchange = async () => {
+    const file = input.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('category', category);
+    try { await api('/deals/' + dealId + '/documents', { method: 'POST', body: fd }); ok('Uploaded.'); renderDeal(); }
+    catch (e) { err(e.message); }
+  };
+  input.click();
 }
 function handleNext(code, d) {
   const deal = d.deal;
