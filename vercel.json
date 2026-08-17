@@ -4,7 +4,7 @@
     {
       "src": "server.js",
       "use": "@vercel/node",
-      "config": { "includeFiles": "{index.html,app.js,styles.css,europa-logo.png,europa-icon.png,boran-coat.png}" }
+      "config": { "includeFiles": "{index.html,app.js,styles.css,europa-logo.png,europa-icon.png,boran-coat.png,favicon.ico,favicon-32.png,apple-touch-icon.png}" }
     }
   ],
   "routes": [

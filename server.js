@@ -495,6 +495,17 @@ app.get('/img/:name', (req, res) => {
   res.sendFile(path.join(__dirname, req.params.name));
 });
 
+// ---------- favicons (browsers request these at the site root) ----------
+const FAVICONS = new Set(['favicon.ico', 'favicon-32.png', 'apple-touch-icon.png']);
+['/favicon.ico', '/favicon-32.png', '/apple-touch-icon.png'].forEach((p) => {
+  app.get(p, (req, res) => {
+    const name = p.slice(1);
+    if (!FAVICONS.has(name)) return res.status(404).end();
+    res.setHeader('Cache-Control', 'public, max-age=604800');
+    res.sendFile(path.join(__dirname, name));
+  });
+});
+
 // ---------- static frontend (flat layout: assets sit next to server.js) ----------
 app.get(['/', '/index.html'], (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/app.js', (req, res) => res.sendFile(path.join(__dirname, 'app.js')));
