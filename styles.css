@@ -506,3 +506,61 @@ h1, h2, h3, h4, .card-h h3, .deal-head h2, .topbar h1, .empty h3, .modal-h h3, .
 /* login refinements */
 .login-logo { max-width: 320px; }
 .login-card { border-radius: 16px; padding: 34px 30px; }
+
+/* ============================================================
+   PREMIUM PASS 2 — derivation, uploads, notifications, steps
+   ============================================================ */
+/* proforma -> invoice derivation line on the deal page */
+.derive-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 16px; }
+.dl-chip { background: #fff; border: 1px solid #ece3d1; border-radius: 999px; padding: 7px 15px; font-size: 13px; color: var(--muted);
+  box-shadow: 0 1px 2px rgba(15,39,68,0.05); }
+.dl-chip b { color: var(--navy); font-size: 14.5px; margin-left: 5px; font-variant-numeric: tabular-nums; }
+.dl-chip.gold { background: var(--gold-soft); border-color: #eddcae; }
+.dl-chip.gold b { color: var(--gold); }
+.dl-plus, .dl-eq { color: var(--gold); font-weight: 700; font-size: 14px; }
+
+/* derivation box inside the new-deal modal */
+.derive { background: var(--gold-soft); border: 1px solid #eddcae; border-radius: 12px; padding: 14px 16px; margin: 6px 0 4px; }
+.derive-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.derive-item { flex: 1; min-width: 130px; }
+.derive-item.narrow { flex: 0 0 96px; min-width: 96px; }
+.derive-item label { display: block; font-size: 12px; font-weight: 650; margin-bottom: 5px; color: var(--muted); }
+.derive-op { font-size: 20px; font-weight: 700; color: var(--gold); padding-bottom: 9px; }
+.derive-note { margin-top: 10px; font-size: 13px; color: var(--muted); }
+.derive-note b { color: var(--navy); } .derive-note b.gold { color: var(--gold); }
+
+/* step ribbon */
+.steps { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.step { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--navy);
+  background: #f4f7fb; border: 1px solid #e2e9f2; border-radius: 999px; padding: 6px 14px; }
+.step .sn { width: 20px; height: 20px; border-radius: 50%; background: var(--navy); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 700; }
+.step-arrow { color: var(--gold); font-weight: 700; }
+
+/* required upload tiles */
+.upload-req { display: grid; gap: 10px; }
+.ureq { display: flex; align-items: center; gap: 12px; border: 2px dashed var(--border-strong); border-radius: 12px;
+  padding: 13px 16px; cursor: pointer; background: #fff; transition: border-color .15s, background .15s; }
+.ureq:hover { border-color: var(--gold); background: #fffdf7; }
+.ureq.ok { border-style: solid; border-color: #bfe3c9; background: #fbfefc; }
+.ureq .uicon { font-size: 24px; }
+.utx { display: flex; flex-direction: column; }
+.utx b { font-size: 14px; }
+.utx em { font-style: normal; font-size: 12.5px; color: var(--muted); }
+.ureq.ok .utx em { color: var(--green); }
+
+/* notification bell */
+.bell { position: relative; background: none; border: 1px solid var(--border-strong); border-radius: 10px;
+  min-width: 44px; min-height: 40px; font-size: 17px; cursor: pointer; }
+.bell:hover { background: var(--surface-2); }
+.bell-dot { position: absolute; top: 6px; right: 7px; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--red); border: 2px solid #fff; }
+.notif-list { display: flex; flex-direction: column; gap: 2px; max-height: 60vh; overflow-y: auto; }
+.notif { display: flex; gap: 12px; padding: 12px 4px; border-bottom: 1px solid var(--border); }
+.notif.unread { background: #fffdf5; }
+.notif-t { font-weight: 650; font-size: 14px; }
+.notif-k { width: 4px; border-radius: 3px; background: var(--border-strong); flex: none; }
+.notif-k.money { background: var(--green); } .notif-k.approval { background: var(--gold); }
+.notif-k.ok { background: var(--green); } .notif-k.warn { background: var(--amber); }
+.verline { margin-top: 8px; font-size: 10.5px; color: #7f96b5; letter-spacing: 0.02em; }
+.verline b { color: #d9c48a; }

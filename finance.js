@@ -145,15 +145,29 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
   const supplierOverpaid = round2(Math.max(0, totalPaidToSupplier - supplierOwed));
 
   // =====================================================================
-  // DELIVERY LAYER (goods received, by batch) — purely informational.
-  // We measure delivered value against the order value (customer invoice).
+  // DELIVERY LAYER (goods produced & shipped, batch by batch).
+  // The Latvian supplier ships against the PROFORMA. Each delivery invoice
+  // therefore reduces BOTH:
+  //   - the remaining proforma value (supplier side), and
+  //   - the remaining client invoice value (our side, proforma + markup).
+  // Deliveries never affect money owed or paid.
   // =====================================================================
-  const deliveredValue = round2(si.reduce((a, b) => a + (Number(b.customer_sales_value) || 0), 0));
+  const markupRatio = proformaTotal > 0 ? invoiceTotal / proformaTotal : 1;
+  const deliveredProforma = round2(si.reduce((a, b) => a + (Number(b.proforma_allocated) || 0), 0));
+  const deliveredClient = round2(
+    si.reduce((a, b) => {
+      const cv = Number(b.customer_sales_value) || 0;
+      if (cv > 0) return a + cv;
+      return a + (Number(b.proforma_allocated) || 0) * markupRatio;
+    }, 0)
+  );
+  const deliveredValue = deliveredClient;
   const deliveryCount = si.length;
   const deliveryTarget = invoiceTotal;
-  const deliveryPct = deliveryTarget > 0 ? round2((deliveredValue / deliveryTarget) * 100) : 0;
-  const deliveryOutstanding = round2(Math.max(0, deliveryTarget - deliveredValue));
-  const overDelivery = round2(Math.max(0, deliveredValue - deliveryTarget));
+  const deliveryPct = deliveryTarget > 0 ? round2((deliveredClient / deliveryTarget) * 100) : 0;
+  const deliveryOutstanding = round2(Math.max(0, deliveryTarget - deliveredClient));
+  const overDelivery = round2(Math.max(0, deliveredClient - deliveryTarget));
+  const proformaRemaining = round2(Math.max(0, proformaTotal - deliveredProforma));
 
   // ---- Our position: cash in hand vs. our income ----
   const heldInHouse = round2(totalReceived - totalPaidToSupplier);
@@ -193,6 +207,10 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
     supplierOverpaid,
     // DELIVERY LAYER
     deliveredValue,
+    deliveredProforma,
+    deliveredClient,
+    proformaRemaining,
+    markupRatio,
     deliveryCount,
     deliveryTarget,
     deliveryPct,

@@ -152,12 +152,14 @@ function shell(title, bodyHtml, actionsHtml = '') {
           <button class="nav-item" id="logout" style="margin-top:8px;padding-left:0">Sign out</button>
         </div>
         <div class="boran"><img src="/img/boran-coat.png" alt="Boran&amp;Co Group" /><span>Part of the<br><b>Boran&amp;Co Group</b></span></div>
+        <div class="verline">Deal Control <b>v2.1</b> · <span id="buildstamp">…</span></div>
       </aside>
       <div class="main">
         <div class="topbar">
           <button class="btn sm menu-btn" id="menu">☰</button>
           <h1>${esc(title)}</h1>
           <div style="flex:1"></div>
+          <button class="bell" id="bell" aria-label="Notifications">🔔<span class="bell-dot hidden" id="bell-dot"></span></button>
           ${actionsHtml}
         </div>
         <div class="content" id="content">${bodyHtml}</div>
@@ -166,6 +168,12 @@ function shell(title, bodyHtml, actionsHtml = '') {
 
   document.querySelectorAll('[data-nav]').forEach((b) => (b.onclick = () => go(b.dataset.nav)));
   document.getElementById('logout').onclick = async () => { await api('/logout', { method: 'POST' }); State.user = null; renderLogin(); };
+  document.getElementById('bell').onclick = notificationsModal;
+  refreshBell();
+  fetch('/version').then((r) => r.json()).then((j) => {
+    const el = document.getElementById('buildstamp');
+    if (el) el.textContent = 'build ' + String(j.build).slice(-6);
+  }).catch(() => {});
   const sb = document.getElementById('sidebar'), scrim = document.getElementById('scrim');
   const openSb = () => { sb.classList.add('open'); scrim.classList.remove('hidden'); };
   const closeSb = () => { sb.classList.remove('open'); scrim.classList.add('hidden'); };
@@ -243,40 +251,104 @@ function dealCard(d) {
 /* ================= NEW DEAL ================= */
 function newDealModal() {
   const body = `
+    <div class="steps">
+      <div class="step"><span class="sn">1</span> Supplier proforma</div>
+      <div class="step-arrow">→</div>
+      <div class="step"><span class="sn">2</span> Our invoice (+ markup)</div>
+      <div class="step-arrow">→</div>
+      <div class="step"><span class="sn">3</span> Deal card</div>
+    </div>
     <div class="form-row">
-      <div class="field"><label>Deal reference</label><input id="f_ref" placeholder="e.g. BRNC-EP-2026-014" /></div>
+      <div class="field"><label>Deal reference</label><input id="f_ref" placeholder="e.g. EP-2026-014" /></div>
       <div class="field"><label>Currency</label>
         <select id="f_cur"><option>EUR</option><option>USD</option><option>GBP</option><option>RUB</option></select></div>
     </div>
     <div class="field"><label>Title</label><input id="f_title" placeholder="Short description of the deal" /></div>
     <div class="form-row">
-      <div class="field"><label>Customer</label><input id="f_cust" /></div>
-      <div class="field"><label>Supplier</label><input id="f_supp" /></div>
+      <div class="field"><label>Supplier (proforma from)</label><input id="f_supp" placeholder="e.g. Latvian supplier" /></div>
+      <div class="field"><label>Client (we invoice)</label><input id="f_cust" /></div>
     </div>
-    <div class="form-row">
-      <div class="field"><label>Supplier proforma total (planned cost)</label><input id="f_prof" inputmode="decimal" placeholder="0.00" /></div>
-      <div class="field"><label>Customer invoice total (sales)</label><input id="f_inv" inputmode="decimal" placeholder="0.00" /></div>
+
+    <div class="derive">
+      <div class="derive-row">
+        <div class="derive-item">
+          <label>Supplier proforma amount</label>
+          <input id="f_prof" inputmode="decimal" placeholder="96.155,00" />
+        </div>
+        <div class="derive-op">+</div>
+        <div class="derive-item narrow">
+          <label>Our markup %</label>
+          <input id="f_rate" inputmode="decimal" value="4" />
+        </div>
+        <div class="derive-op">=</div>
+        <div class="derive-item">
+          <label>Our invoice to client</label>
+          <input id="f_inv" inputmode="decimal" placeholder="auto" />
+        </div>
+      </div>
+      <div class="derive-note" id="f_derive">Our invoice is derived from the supplier proforma. Enter the proforma to calculate it.</div>
     </div>
-    <div class="form-row">
-      <div class="field"><label>Customer prepayment required</label><input id="f_cprep" inputmode="decimal" placeholder="0.00" /></div>
-      <div class="field"><label>Supplier prepayment required</label><input id="f_sprep" inputmode="decimal" placeholder="0.00" /></div>
+
+    <div class="section-title" style="margin:16px 0 8px">Invoice files — both are required</div>
+    <div class="upload-req">
+      <label class="ureq" id="u1lab"><span class="uicon">📄</span>
+        <span class="utx"><b>Supplier proforma invoice</b><em id="u1name">No file chosen</em></span>
+        <input type="file" id="f_file_prof" accept="application/pdf,image/png,image/jpeg" hidden /></label>
+      <label class="ureq" id="u2lab"><span class="uicon">🧾</span>
+        <span class="utx"><b>Our invoice to the client</b><em id="u2name">No file chosen</em></span>
+        <input type="file" id="f_file_inv" accept="application/pdf,image/png,image/jpeg" hidden /></label>
     </div>
-    <div class="field"><label>Our commission rate (%)</label><input id="f_rate" inputmode="decimal" value="4" />
-      <div class="hint">Locks once the first customer payment is posted.</div></div>
-    <div id="nd_err" class="alert err hidden"></div>`;
+    <div id="nd_err" class="alert err hidden" style="margin-top:12px"></div>`;
   const footer = `<button class="btn" id="nd_cancel">Cancel</button><button class="btn primary" id="nd_save">Create deal</button>`;
-  const close = openModal('New deal', body, footer);
+  const close = openModal('New deal', body, footer, { wide: true });
   document.getElementById('nd_cancel').onclick = close;
+
+  const prof = document.getElementById('f_prof'), rate = document.getElementById('f_rate'), inv = document.getElementById('f_inv');
+  const note = document.getElementById('f_derive');
+  let invTouched = false;
+  inv.addEventListener('input', () => { invTouched = true; });
+  const recalc = () => {
+    const p = parseAmount(prof.value), r = parseAmount(rate.value);
+    if (!Number.isFinite(p) || p <= 0) { note.textContent = 'Our invoice is derived from the supplier proforma. Enter the proforma to calculate it.'; return; }
+    const pctv = Number.isFinite(r) ? r : 4;
+    const calc = Math.round(p * (1 + pctv / 100) * 100) / 100;
+    if (!invTouched) inv.value = calc;
+    const shown = parseAmount(inv.value);
+    const margin = Number.isFinite(shown) ? Math.round((shown - p) * 100) / 100 : calc - p;
+    note.innerHTML = `Supplier proforma <b>${money(p)}</b> + ${pctv}% → our invoice <b>${money(Number.isFinite(shown) ? shown : calc)}</b> · our income <b class="gold">${money(margin)}</b>`;
+  };
+  prof.addEventListener('input', recalc); rate.addEventListener('input', recalc); inv.addEventListener('input', recalc);
+
+  const bindFile = (inputId, labelId, nameId) => {
+    const input = document.getElementById(inputId);
+    input.addEventListener('change', () => {
+      const f = input.files[0];
+      document.getElementById(nameId).textContent = f ? f.name : 'No file chosen';
+      document.getElementById(labelId).classList.toggle('ok', !!f);
+    });
+  };
+  bindFile('f_file_prof', 'u1lab', 'u1name');
+  bindFile('f_file_inv', 'u2lab', 'u2name');
+
   document.getElementById('nd_save').onclick = async () => {
+    const fProf = document.getElementById('f_file_prof').files[0];
+    const fInv = document.getElementById('f_file_inv').files[0];
+    if (!fProf || !fInv) return showErr('nd_err', 'Both invoice files are required — attach the supplier proforma and our client invoice.');
     const payload = {
       ref: v('f_ref'), currency: v('f_cur'), title: v('f_title'),
       customer_name: v('f_cust'), supplier_name: v('f_supp'),
-      proforma_total: v('f_prof'), invoice_total: v('f_inv'),
-      customer_prepay_required: v('f_cprep'), supplier_prepay_required: v('f_sprep'),
-      commission_rate: v('f_rate'),
+      proforma_total: v('f_prof'), invoice_total: v('f_inv'), commission_rate: v('f_rate'),
     };
-    try { const r = await api('/deals', { method: 'POST', body: payload }); close(); ok('Deal created.'); go('deal', { id: r.id }); }
-    catch (e) { showErr('nd_err', e.message); }
+    try {
+      const r = await api('/deals', { method: 'POST', body: payload });
+      const up = async (file, category) => {
+        const fd = new FormData(); fd.append('file', file); fd.append('category', category);
+        await api('/deals/' + r.id + '/documents', { method: 'POST', body: fd });
+      };
+      await up(fProf, 'Supplier proformas');
+      await up(fInv, 'Customer invoices');
+      close(); ok('Deal created with both invoices attached.'); go('deal', { id: r.id });
+    } catch (e) { showErr('nd_err', e.message); }
   };
 }
 const v = (id) => document.getElementById(id).value.trim();
@@ -318,6 +390,13 @@ async function renderDeal() {
       <span class="pill ${deal.status === 'active' ? 'blue' : deal.status === 'completed' ? 'green' : 'gray'}">${esc(deal.status)}</span>
     </div>
     <div class="parties muted" style="margin-bottom:6px">${esc(deal.customer_name)} &nbsp;→&nbsp; ${esc(deal.supplier_name)}</div>
+    <div class="derive-line">
+      <span class="dl-chip">Supplier proforma <b>${money(deal.proforma_total, cur)}</b></span>
+      <span class="dl-plus">+ ${c.marginPct ? c.marginPct.toFixed(2).replace(/\.00$/, '') : 4}%</span>
+      <span class="dl-chip">Our invoice to client <b>${money(deal.invoice_total, cur)}</b></span>
+      <span class="dl-eq">=</span>
+      <span class="dl-chip gold">Our income <b>${money(c.dealMargin, cur)}</b></span>
+    </div>
     ${!ro ? `<div class="nextline"><span class="nextline-k">Next:</span> ${esc(na.label)}</div>` : ''}
 
     <!-- MONEY PICTURE: Client -> Us -> Supplier -->
@@ -373,10 +452,11 @@ async function renderDeal() {
 
     ${!ro && canWrite() ? `
     <div class="quick-actions">
-      <button class="btn primary big-btn" id="q-received">＋&nbsp; Money received from client</button>
-      <button class="btn big-btn" id="q-paid">＋&nbsp; Money paid to supplier</button>
-      <button class="btn big-btn" id="q-delivery">＋&nbsp; Add a delivery</button>
-    </div>` : ''}
+      ${isAdmin() ? `<button class="btn primary big-btn" id="q-received">＋&nbsp; Money received from client</button>
+      <button class="btn big-btn" id="q-paid">＋&nbsp; Money paid to supplier</button>` : ''}
+      <button class="btn ${isAdmin() ? '' : 'primary'} big-btn" id="q-delivery">＋&nbsp; Add a delivery</button>
+    </div>
+    ${isOffice() ? `<div class="meta" style="margin-top:8px">Financial entries are made by an administrator. Deliveries you add are sent for approval.</div>` : ''}` : ''}
 
     <!-- DELIVERY LAYER (separate from money) -->
     ${deliveryCard(d, cur)}
@@ -499,14 +579,15 @@ function deliveriesTable(d, cur) {
   if (!invs.length) return `<div class="empty small">No deliveries recorded yet.</div>`;
   return `
     <table class="grid">
-      <thead><tr><th>Delivery / invoice #</th><th>Date</th><th class="num">Value delivered</th><th>Qty</th><th></th></tr></thead>
+      <thead><tr><th>Delivery / invoice #</th><th>Date</th><th class="num">Proforma value</th><th class="num">Client value</th><th>Qty</th><th></th></tr></thead>
       <tbody>
       ${invs.map((i) => {
         const proof = docFor(d, 'supplier_invoice', i.id);
         return `<tr>
           <td data-label="Delivery #">${esc(i.invoice_number)} ${i.status === 'pending' ? '<span class="pill amber">pending</span>' : ''} ${proof ? '<span class="pill green">file</span>' : ''}</td>
           <td data-label="Date">${fdate(i.delivery_date || i.issue_date)}</td>
-          <td class="num" data-label="Value delivered">${money(i.customer_sales_value, cur)}</td>
+          <td class="num" data-label="Proforma value">${money(i.proforma_allocated, cur)}</td>
+          <td class="num" data-label="Client value">${money(i.customer_sales_value, cur)}</td>
           <td data-label="Qty">${esc(i.quantity || '—')}</td>
           <td class="num" data-label="">
             ${canWrite() && i.status !== 'void' ? `<button class="btn sm" data-upload='${uploadAttr('supplier_invoice', i.id)}'>File</button>` : ''}
@@ -552,7 +633,8 @@ function deliveryCard(d, cur) {
   const body = `
     <div class="dl-head">
       <div><div class="dl-big green">${money(c.deliveredValue, cur)}</div>
-        <div class="meta">delivered of ${money(c.deliveryTarget, cur)} order · ${pct(c.deliveryPct)}</div></div>
+        <div class="meta">delivered of ${money(c.deliveryTarget, cur)} (our invoice) · ${pct(c.deliveryPct)}</div>
+        <div class="meta">supplier proforma: ${money(c.deliveredProforma, cur)} delivered · ${money(c.proformaRemaining, cur)} remaining</div></div>
       <div class="dl-tags">
         ${c.deliveryOutstanding > 0.005 ? `<span class="flow-tag amber">Awaiting ${money(c.deliveryOutstanding, cur)}</span>` : `<span class="flow-tag green">Fully delivered</span>`}
         ${c.overDelivery > 0.005 ? `<span class="flow-tag red">Over-delivered ${money(c.overDelivery, cur)}</span>` : ''}
@@ -614,7 +696,8 @@ function docItem(doc) {
         <span class="pill ${pillCls}">${esc(doc.status)}</span></div>
       <div>${isAdmin() ? `
         <button class="btn sm" data-docstatus="${doc.id}:approved">Approve</button>
-        <button class="btn sm" data-docstatus="${doc.id}:flagged">Flag</button>` : ''}</div>
+        <button class="btn sm" data-docstatus="${doc.id}:flagged">Flag</button>
+        <button class="btn sm danger" data-docdel="${doc.id}">Delete</button>` : ''}</div>
     </div>
     ${doc.link_type ? `<div class="meta" style="margin-top:6px">Linked to ${esc(doc.link_type.replace('_', ' '))} #${doc.link_id}</div>` : ''}
   </div>`;
@@ -679,6 +762,16 @@ function wireDeal(d) {
   });
   document.querySelectorAll('[data-tileupload]').forEach((b) => (b.onclick = () => quickUpload(deal.id, b.dataset.tileupload)));
   document.querySelectorAll('[data-preview]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); docPreview(Number(a.dataset.preview)); }));
+  document.querySelectorAll('[data-docdel]').forEach((b) => (b.onclick = () => {
+    const id = b.dataset.docdel;
+    const close = openModal('Delete file', '<p>Delete this uploaded file? This cannot be undone.</p>',
+      `<button class="btn" id="dd_no">Cancel</button><button class="btn danger" id="dd_yes">Delete file</button>`);
+    document.getElementById('dd_no').onclick = close;
+    document.getElementById('dd_yes').onclick = async () => {
+      try { await api('/documents/' + id, { method: 'DELETE' }); close(); ok('File deleted.'); renderDeal(); }
+      catch (e) { err(e.message); close(); }
+    };
+  }));
 }
 
 /* One-click document preview (PDF in a frame, images inline). */
@@ -814,33 +907,61 @@ function suppPayModal(deal, d) {
   };
 }
 
-/* ---- delivery modal (informational only, no money) ---- */
+/* ---- delivery modal: file is mandatory, no money effect ---- */
 function suppInvModal(deal, c) {
   const cur = deal.currency;
   const body = `
-    <div class="alert info">A delivery is just a record that goods arrived. It does <b>not</b> change any payment.</div>
+    <div class="alert info">A delivery records goods shipped against the supplier proforma. It does <b>not</b> change any payment. The delivery invoice file is required.</div>
     <div class="form-row">
-      <div class="field"><label>Delivery / invoice number</label><input id="si_num" autofocus /></div>
+      <div class="field"><label>Delivery invoice number</label><input id="si_num" autofocus /></div>
       <div class="field"><label>Delivery date</label><input id="si_deliv" type="date" value="${today()}" /></div>
     </div>
+    <div class="field"><label>Value is stated in</label>
+      <select id="si_basis">
+        <option value="supplier">Supplier proforma terms</option>
+        <option value="client">Our client invoice terms</option>
+      </select></div>
     <div class="form-row">
-      <div class="field"><label>Value of goods delivered</label><input id="si_sales" inputmode="decimal" />
-        <div class="hint">Order value ${money(deal.invoice_total, cur)} · delivered so far ${money(c.deliveredValue, cur)}</div></div>
+      <div class="field"><label>Value of this delivery</label><input id="si_amt" inputmode="decimal" />
+        <div class="hint" id="si_hint">Proforma ${money(deal.proforma_total, cur)} · remaining ${money(c.proformaRemaining, cur)}</div></div>
       <div class="field"><label>Quantity (optional)</label><input id="si_qty" placeholder="e.g. 5,000 units" /></div>
     </div>
-    <div class="field"><label>Notes</label><textarea id="si_notes"></textarea></div>
+    <div class="upload-req">
+      <label class="ureq" id="dl_lab"><span class="uicon">🚚</span>
+        <span class="utx"><b>Delivery invoice file (required)</b><em id="dl_name">No file chosen</em></span>
+        <input type="file" id="si_file" accept="application/pdf,image/png,image/jpeg" hidden /></label>
+    </div>
+    <div class="field" style="margin-top:12px"><label>Notes</label><textarea id="si_notes"></textarea></div>
     <div id="si_err" class="alert err hidden"></div>`;
   const footer = `<button class="btn" id="si_cancel">Cancel</button><button class="btn primary" id="si_save">Save delivery</button>`;
-  const close = openModal(isOffice() ? 'Propose delivery' : 'Add a delivery', body, footer);
+  const close = openModal(isOffice() ? 'Propose delivery (needs approval)' : 'Add a delivery', body, footer, { wide: true });
   document.getElementById('si_cancel').onclick = close;
+  const fileIn = document.getElementById('si_file');
+  fileIn.addEventListener('change', () => {
+    const f = fileIn.files[0];
+    document.getElementById('dl_name').textContent = f ? f.name : 'No file chosen';
+    document.getElementById('dl_lab').classList.toggle('ok', !!f);
+  });
+  const basis = document.getElementById('si_basis'), hint = document.getElementById('si_hint');
+  basis.onchange = () => {
+    hint.textContent = basis.value === 'supplier'
+      ? `Proforma ${money(deal.proforma_total, cur)} · remaining ${money(c.proformaRemaining, cur)}`
+      : `Our invoice ${money(deal.invoice_total, cur)} · remaining ${money(c.deliveryOutstanding, cur)}`;
+  };
   document.getElementById('si_save').onclick = async () => {
-    const payload = {
-      invoice_number: v('si_num'), delivery_date: v('si_deliv'),
-      customer_sales_value: v('si_sales'), quantity: v('si_qty'), notes: v('si_notes'),
-    };
+    const file = fileIn.files[0];
+    if (!file) return showErr('si_err', 'Attach the delivery invoice file — a delivery cannot be saved without it.');
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('invoice_number', v('si_num'));
+    fd.append('delivery_date', v('si_deliv'));
+    fd.append('basis', basis.value);
+    fd.append('amount', v('si_amt'));
+    fd.append('quantity', v('si_qty'));
+    fd.append('notes', v('si_notes'));
     try {
-      const r = await api('/deals/' + deal.id + '/supplier-invoices', { method: 'POST', body: payload });
-      close(); ok(r.status === 'pending' ? 'Submitted for approval.' : 'Delivery recorded.'); renderDeal();
+      const r = await api('/deals/' + deal.id + '/supplier-invoices', { method: 'POST', body: fd });
+      close(); ok(r.status === 'pending' ? 'Sent for approval.' : 'Delivery recorded.'); renderDeal();
     } catch (e) { showErr('si_err', e.message); }
   };
 }
@@ -1119,6 +1240,36 @@ function purgeModal(id, ref) {
   document.getElementById('pg_go').onclick = async () => {
     try { await api('/deals/' + id + '/purge', { method: 'POST', body: { confirm: v('pg_ref') } }); close(); ok('Permanently deleted.'); renderArchive(); }
     catch (e) { showErr('pg_err', e.message); }
+  };
+}
+
+/* ================= NOTIFICATIONS ================= */
+async function refreshBell() {
+  try {
+    const n = await api('/notifications');
+    State._notif = n;
+    const dot = document.getElementById('bell-dot');
+    if (dot) dot.classList.toggle('hidden', !n.unread);
+  } catch {}
+}
+async function notificationsModal() {
+  let n = State._notif;
+  try { n = await api('/notifications'); } catch {}
+  const items = (n && n.items) || [];
+  const body = items.length ? `<div class="notif-list">${items.map((it) => `
+    <div class="notif ${it.read ? '' : 'unread'}">
+      <div class="notif-k ${esc(it.kind)}"></div>
+      <div>
+        <div class="notif-t">${esc(it.title)}${it.deal_ref ? ` <span class="tag">${esc(it.deal_ref)}</span>` : ''}</div>
+        ${it.body ? `<div class="meta">${esc(it.body)}</div>` : ''}
+        <div class="meta">${esc(String(it.created_at).replace('T', ' ').slice(0, 16))}</div>
+      </div>
+    </div>`).join('')}</div>` : '<div class="empty small">Nothing new.</div>';
+  const close = openModal('Notifications', body, `<button class="btn" id="nt_close">Close</button><button class="btn primary" id="nt_read">Mark all read</button>`);
+  document.getElementById('nt_close').onclick = close;
+  document.getElementById('nt_read').onclick = async () => {
+    try { await api('/notifications/read', { method: 'POST' }); } catch {}
+    close(); refreshBell();
   };
 }
 

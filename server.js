@@ -32,6 +32,13 @@ const num = (v) => finance.parseAmount(v).value;
 const eps = 0.005;
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
+const ALLOWED = new Set(['application/pdf', 'image/png', 'image/jpeg']);
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 4 * 1024 * 1024 }, // 4 MB — Vercel serverless request-body ceiling
+  fileFilter: (req, file, cb) => cb(null, ALLOWED.has(file.mimetype)),
+});
+
 async function audit(dealId, user, action, entityType, entityId, detail) {
   await query(
     'INSERT INTO audit_log (deal_id,actor,actor_name,action,entity_type,entity_id,detail) VALUES ($1,$2,$3,$4,$5,$6,$7)',
@@ -72,9 +79,21 @@ async function duplicatePending(dealId, entityType, action, keyAmount, keyDate) 
     catch { return false; }
   });
 }
+/** Notify users (by role) so nothing is lost between people. */
+async function notify(roles, dealId, title, body, kind, exceptUserId) {
+  const users = (await query('SELECT id FROM users WHERE active=1 AND role = ANY($1)', [roles])).rows;
+  for (const u of users) {
+    if (exceptUserId && u.id === exceptUserId) continue;
+    await query('INSERT INTO notifications (user_id,deal_id,title,body,kind) VALUES ($1,$2,$3,$4,$5)',
+      [u.id, dealId || null, title, body || null, kind || 'info']);
+  }
+}
+
 async function createApproval(dealId, entityType, entityId, action, summary, user) {
   await query('INSERT INTO approvals (deal_id,entity_type,entity_id,action,summary,requested_by) VALUES ($1,$2,$3,$4,$5,$6)',
     [dealId, entityType, entityId, action, JSON.stringify(summary), user.id]);
+  await notify(['admin'], dealId, 'Awaiting your approval',
+    `${user.name} submitted a ${String(entityType).replace(/_/g, ' ')} for approval.`, 'approval', user.id);
 }
 
 // ---------- auth ----------
@@ -168,12 +187,18 @@ app.post('/api/deals', requireAuth, requireRole('admin', 'office'), wrap(async (
   const dup = (await query('SELECT 1 FROM deals WHERE ref=$1', [String(b.ref).trim()])).rows[0];
   if (dup) return res.status(409).json({ error: 'A deal with that reference already exists.' });
   let rate = num(b.commission_rate); if (!rate || rate <= 0) rate = 0.04; if (rate > 1) rate = rate / 100;
+  // Our client invoice is DERIVED from the Latvian proforma: proforma + markup.
+  const proforma = num(b.proforma_total);
+  if (!(proforma > 0)) return res.status(400).json({ error: 'Enter the supplier (proforma) amount.' });
+  const invoiceTotal = (b.invoice_total != null && num(b.invoice_total) > 0)
+    ? num(b.invoice_total)
+    : finance.round2(proforma * (1 + rate));
   const id = (await query(
     `INSERT INTO deals (ref,title,customer_name,supplier_name,currency,proforma_total,invoice_total,
        customer_prepay_required,supplier_prepay_required,commission_rate,notes,created_by,status)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active') RETURNING id`,
     [String(b.ref).trim(), String(b.title).trim(), String(b.customer_name).trim(), String(b.supplier_name).trim(),
-      (b.currency || 'EUR').trim(), num(b.proforma_total), num(b.invoice_total), num(b.customer_prepay_required),
+      (b.currency || 'EUR').trim(), proforma, invoiceTotal, num(b.customer_prepay_required),
       num(b.supplier_prepay_required), rate, b.notes || null, req.user.id]
   )).rows[0].id;
   await audit(id, req.user, 'create_deal', 'deal', id, { ref: b.ref });
@@ -258,7 +283,7 @@ app.post('/api/deals/:id/purge', requireAuth, requireRole('admin'), wrap(async (
 }));
 
 // ---------- customer payments ----------
-app.post('/api/deals/:id/customer-payments', requireAuth, requireRole('admin', 'office'), wrap(async (req, res) => {
+app.post('/api/deals/:id/customer-payments', requireAuth, requireRole('admin'), wrap(async (req, res) => {
   const d = await getDeal(Number(req.params.id));
   if (!d) return res.status(404).json({ error: 'Deal not found.' });
   if (d.status !== 'active') return res.status(409).json({ error: 'This deal is not open for new entries.' });
@@ -283,6 +308,8 @@ app.post('/api/deals/:id/customer-payments', requireAuth, requireRole('admin', '
   const summary = { amount: received, applied, kept, reserved, overpayment, date: b.date, ptype: b.ptype || 'payment' };
   if (status === 'pending') await createApproval(d.id, 'customer_payment', id, 'create', summary, req.user);
   await audit(d.id, req.user, status === 'posted' ? 'post_customer_payment' : 'propose_customer_payment', 'customer_payment', id, summary);
+  await notify(['office', 'visitor'], d.id, 'Client payment recorded',
+    `${d.ref}: ${received.toFixed(2)} ${d.currency} received from ${d.customer_name}.`, 'money', req.user.id);
   res.json({ id, status, applied, kept, reserved, overpayment });
 }));
 
@@ -299,29 +326,52 @@ app.post('/api/deals/:id/customer-payments/preview', requireAuth, wrap(async (re
 }));
 
 // ---------- supplier invoices ----------
-app.post('/api/deals/:id/supplier-invoices', requireAuth, requireRole('admin', 'office'), wrap(async (req, res) => {
+app.post('/api/deals/:id/supplier-invoices', requireAuth, requireRole('admin', 'office'), upload.single('file'), wrap(async (req, res) => {
   const d = await getDeal(Number(req.params.id));
   if (!d) return res.status(404).json({ error: 'Deal not found.' });
   if (d.status !== 'active') return res.status(409).json({ error: 'This deal is not open for new entries.' });
-  // A delivery is purely a record that goods arrived. It has NO effect on money.
+  // A delivery records goods shipped against the proforma. It has NO effect on
+  // money, but the supplier's delivery invoice file is MANDATORY.
   const b = req.body || {};
-  if (!b.invoice_number) return res.status(400).json({ error: 'A delivery / invoice number is required.' });
-  const deliveredValue = num(b.customer_sales_value);
-  if (!(deliveredValue > 0)) return res.status(400).json({ error: 'Enter the value of goods delivered in this batch.' });
+  if (!req.file) return res.status(400).json({ error: 'Attach the delivery invoice file (PDF, PNG or JPEG). A delivery cannot be saved without it.' });
+  if (!b.invoice_number) return res.status(400).json({ error: 'A delivery invoice number is required.' });
+
+  // Value may be given in supplier (proforma) terms or in our client-invoice terms.
+  const basis = b.basis === 'client' ? 'client' : 'supplier';
+  const entered = num(b.amount);
+  if (!(entered > 0)) return res.status(400).json({ error: 'Enter the value of this delivery.' });
+  const proformaTotal = Number(d.proforma_total) || 0;
+  const invoiceTotal = Number(d.invoice_total) || 0;
+  const ratio = proformaTotal > 0 ? invoiceTotal / proformaTotal : 1;
+  const proformaPart = basis === 'client' ? finance.round2(entered / (ratio || 1)) : entered;
+  const clientPart = basis === 'client' ? entered : finance.round2(entered * ratio);
+
   const status = entersLedger(req.user) ? 'posted' : 'pending';
   const id = (await query(
     `INSERT INTO supplier_invoices (deal_id,invoice_number,issue_date,delivery_date,proforma_allocated,actual_total,prepay_credit_applied,customer_sales_value,quantity,notes,status,created_by)
-     VALUES ($1,$2,$3,$4,0,0,0,$5,$6,$7,$8,$9) RETURNING id`,
-    [d.id, String(b.invoice_number).trim(), b.issue_date || b.delivery_date || null, b.delivery_date || null, deliveredValue, b.quantity || null, b.notes || null, status, req.user.id]
+     VALUES ($1,$2,$3,$4,$5,0,0,$6,$7,$8,$9,$10) RETURNING id`,
+    [d.id, String(b.invoice_number).trim(), b.delivery_date || null, b.delivery_date || null,
+      proformaPart, clientPart, b.quantity || null, b.notes || null, status, req.user.id]
   )).rows[0].id;
-  const summary = { amount: deliveredValue, invoice_number: b.invoice_number, customer_sales_value: deliveredValue, date: b.delivery_date || b.issue_date || '', delivery: true };
+
+  // Store the mandatory invoice file, linked to this delivery.
+  await query(
+    `INSERT INTO documents (deal_id,category,original_name,mime,size,content,link_type,link_id,status,uploaded_by)
+     VALUES ($1,$2,$3,$4,$5,$6,'supplier_invoice',$7,$8,$9)`,
+    [d.id, 'Delivery notes', req.file.originalname, req.file.mimetype, req.file.size, req.file.buffer,
+      id, req.user.role === 'admin' ? 'approved' : 'awaiting', req.user.id]
+  );
+
+  const summary = { amount: proformaPart, invoice_number: b.invoice_number, customer_sales_value: clientPart,
+    proforma_allocated: proformaPart, date: b.delivery_date || '', delivery: true, file: req.file.originalname };
   if (status === 'pending') await createApproval(d.id, 'supplier_invoice', id, 'create', summary, req.user);
   await audit(d.id, req.user, status === 'posted' ? 'post_delivery' : 'propose_delivery', 'supplier_invoice', id, summary);
+  if (status === 'posted') await notify(['office'], d.id, 'Delivery recorded', `${d.ref}: delivery ${b.invoice_number} added.`, 'info', req.user.id);
   res.json({ id, status });
 }));
 
 // ---------- supplier payments ----------
-app.post('/api/deals/:id/supplier-payments', requireAuth, requireRole('admin', 'office'), wrap(async (req, res) => {
+app.post('/api/deals/:id/supplier-payments', requireAuth, requireRole('admin'), wrap(async (req, res) => {
   const d = await getDeal(Number(req.params.id));
   if (!d) return res.status(404).json({ error: 'Deal not found.' });
   if (d.status !== 'active') return res.status(409).json({ error: 'This deal is not open for new entries.' });
@@ -338,6 +388,8 @@ app.post('/api/deals/:id/supplier-payments', requireAuth, requireRole('admin', '
     [d.id, b.date, amount, b.bank_ref || null, b.notes || null, status, req.user.id]
   )).rows[0].id;
   const summary = { amount, date: b.date };
+  await notify(['office', 'visitor'], d.id, 'Payment to supplier recorded',
+    `${d.ref}: ${amount.toFixed(2)} ${d.currency} paid to ${d.supplier_name}.`, 'money', req.user.id);
   if (status === 'pending') await createApproval(d.id, 'supplier_payment', id, 'create', summary, req.user);
   await audit(d.id, req.user, status === 'posted' ? 'post_supplier_payment' : 'propose_supplier_payment', 'supplier_payment', id, summary);
   res.json({ id, status });
@@ -381,6 +433,9 @@ function resolveApproval(approve) {
     if (table && a.entity_id) await query(`UPDATE ${table} SET status=$1 WHERE id=$2`, [approve ? 'posted' : 'void', a.entity_id]);
     await query("UPDATE approvals SET status=$1, resolved_by=$2, resolved_at=NOW() WHERE id=$3", [approve ? 'approved' : 'rejected', req.user.id, a.id]);
     await audit(a.deal_id, req.user, approve ? 'approve' : 'reject', a.entity_type, a.entity_id, { approvalId: a.id });
+    await query('INSERT INTO notifications (user_id,deal_id,title,body,kind) VALUES ($1,$2,$3,$4,$5)',
+      [a.requested_by, a.deal_id, approve ? 'Your submission was approved' : 'Your submission was rejected',
+       `${String(a.entity_type).replace(/_/g, ' ')} reviewed by ${req.user.name}.`, approve ? 'ok' : 'warn']);
     res.json({ ok: true });
   });
 }
@@ -388,12 +443,6 @@ app.post('/api/approvals/:id/approve', requireAuth, requireRole('admin'), resolv
 app.post('/api/approvals/:id/reject', requireAuth, requireRole('admin'), resolveApproval(false));
 
 // ---------- documents (stored in Postgres) ----------
-const ALLOWED = new Set(['application/pdf', 'image/png', 'image/jpeg']);
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 4 * 1024 * 1024 }, // 4 MB — Vercel serverless request-body ceiling
-  fileFilter: (req, file, cb) => cb(null, ALLOWED.has(file.mimetype)),
-});
 app.post('/api/deals/:id/documents', requireAuth, requireRole('admin', 'office'), upload.single('file'), wrap(async (req, res) => {
   const d = await getDeal(Number(req.params.id));
   if (!d) return res.status(404).json({ error: 'Deal not found.' });
@@ -424,6 +473,28 @@ app.get('/api/documents/:id/file', requireAuth, wrap(async (req, res) => {
   res.setHeader('Content-Type', doc.mime);
   res.setHeader('Content-Disposition', `inline; filename="${String(doc.original_name).replace(/"/g, '')}"`);
   res.send(doc.content); // bytea -> Buffer
+}));
+
+// ---------- notifications ----------
+app.get('/api/notifications', requireAuth, wrap(async (req, res) => {
+  const rows = (await query(
+    `SELECT n.*, d.ref AS deal_ref FROM notifications n LEFT JOIN deals d ON d.id = n.deal_id
+     WHERE n.user_id=$1 ORDER BY n.created_at DESC LIMIT 60`, [req.user.id])).rows;
+  const unread = rows.filter((r) => !r.read).length;
+  res.json({ items: rows, unread });
+}));
+app.post('/api/notifications/read', requireAuth, wrap(async (req, res) => {
+  await query('UPDATE notifications SET read=1 WHERE user_id=$1', [req.user.id]);
+  res.json({ ok: true });
+}));
+
+// ---------- delete an uploaded file (admin only) ----------
+app.delete('/api/documents/:id', requireAuth, requireRole('admin'), wrap(async (req, res) => {
+  const doc = (await query('SELECT id,deal_id,original_name,category FROM documents WHERE id=$1', [Number(req.params.id)])).rows[0];
+  if (!doc) return res.status(404).json({ error: 'Document not found.' });
+  await query('DELETE FROM documents WHERE id=$1', [doc.id]);
+  await audit(doc.deal_id, req.user, 'delete_document', 'document', doc.id, { name: doc.original_name, category: doc.category });
+  res.json({ ok: true });
 }));
 
 // ---------- global activity log (admin) ----------
@@ -507,11 +578,42 @@ const FAVICONS = new Set(['favicon.ico', 'favicon-32.png', 'apple-touch-icon.png
 });
 
 // ---------- static frontend (flat layout: assets sit next to server.js) ----------
-app.get(['/', '/index.html'], (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/app.js', (req, res) => res.sendFile(path.join(__dirname, 'app.js')));
-app.get('/styles.css', (req, res) => res.sendFile(path.join(__dirname, 'styles.css')));
+// Build stamp: changes every deploy so browsers can never serve a stale app.js/css.
+const BUILD = (() => {
+  try {
+    const fsx = require('fs');
+    const st = Math.max(
+      fsx.statSync(path.join(__dirname, 'app.js')).mtimeMs,
+      fsx.statSync(path.join(__dirname, 'styles.css')).mtimeMs
+    );
+    return String(Math.floor(st));
+  } catch { return String(Date.now()); }
+})();
+
+function sendNoStore(res, file) {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.sendFile(path.join(__dirname, file));
+}
+
+// The shell must never be cached, and it injects the current build stamp so the
+// browser requests app.js?v=<build> and styles.css?v=<build> after every deploy.
+app.get(['/', '/index.html'], (req, res) => {
+  const fsx = require('fs');
+  let html = fsx.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+  html = html.replace('/styles.css', '/styles.css?v=' + BUILD).replace('/app.js', '/app.js?v=' + BUILD);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.send(html);
+});
+app.get('/version', (req, res) => res.json({ build: BUILD }));
+app.get('/app.js', (req, res) => sendNoStore(res, 'app.js'));
+app.get('/styles.css', (req, res) => sendNoStore(res, 'styles.css'));
 // Single-page app fallback for any non-API route.
-app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.get('*', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
 
 // ---------- errors ----------
 app.use((err, req, res, next) => {
