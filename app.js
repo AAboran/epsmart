@@ -30,6 +30,10 @@ function money(n, cur = 'EUR') {
   return (v < 0 ? '-' : '') + sym + s;
 }
 function pct(n) { return (Number(n) || 0).toFixed(1) + '%'; }
+/* Small "i" button that reveals an explanation on hover or focus. */
+function info(text) {
+  return `<button class="ibtn" type="button" tabindex="0" aria-label="Explanation" data-tip="${esc(text)}">i</button>`;
+}
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
