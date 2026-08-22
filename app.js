@@ -429,20 +429,14 @@ async function renderDeal() {
       <div class="flow-node europa">
         <div class="flow-role">Europa · us</div>
         ${isAdmin() ? `
-          <div class="flow-name">Our income ${info('Cash held in-house is ' + money(c.heldInHouse, cur) + '. Of that, ' + money(c.incomeKept, cur) + ' is our own 4% income and ' + money(Math.max(0, c.supplierShareHeld), cur) + ' is the supplier\'s share still sitting with us, which still has to go out.')}</div>
+          <div class="flow-name">Our income ${info('Our income on this deal is the markup: invoice less supplier proforma. It builds up as the client pays. Cash held now also contains the supplier\'s share, which still goes out.')}</div>
           <div class="flow-big gold">${money(c.incomeKept, cur)}</div>
-          <div class="flow-sub">of ${money(c.incomeExpectedTotal, cur)} expected</div>
+          <div class="flow-sub">earned of ${money(c.feeTotal, cur)} total</div>
           <div class="progress gold"><span style="width:${incPct}%"></span></div>
-          <div class="held-split">
-            <div class="hs-bar">
-              <span class="hs-ours" style="width:${c.heldInHouse > 0 ? Math.min(100, Math.max(0, c.incomeKept) / c.heldInHouse * 100) : 0}%"></span>
-              <span class="hs-theirs" style="width:${c.heldInHouse > 0 ? Math.min(100, Math.max(0, c.supplierShareHeld) / c.heldInHouse * 100) : 0}%"></span>
-            </div>
-            <div class="hs-legend">
-              <span><i class="dot ours"></i> ours ${money(Math.max(0, c.incomeKept), cur)}</span>
-              <span><i class="dot theirs"></i> to go out ${money(Math.max(0, c.supplierShareHeld), cur)}</span>
-            </div>
-            <div class="hs-total">Held in-house ${money(c.heldInHouse, cur)}</div>
+          <div class="mini3">
+            <div class="m3"><span>Cash held now</span><b>${money(c.heldInHouse, cur)}</b></div>
+            <div class="m3"><span>Our income (total)</span><b class="gold">${money(c.feeTotal, cur)}</b></div>
+            <div class="m3"><span>Still to come in</span><b>${money(c.customerBalance, cur)}</b></div>
           </div>
           ${c.companyMoneyFronted > 0.005 ? `<div class="flow-tag red">Fronted ${money(c.companyMoneyFronted, cur)}</div>` : ''}
         ` : `
@@ -481,9 +475,9 @@ async function renderDeal() {
         <div class="pos-divider"></div>
         <div class="pos-group">
           ${isAdmin() ? `
-          <div class="pos-item"><div class="pos-k">Cash held in-house now ${info('Of the ' + money(held, cur) + ' currently held, ' + money(Math.max(0, c.incomeKept), cur) + ' is our own 4% income and ' + money(Math.max(0, diff), cur) + ' is supplier money that still has to go out.')}</div><div class="pos-v">${money(held, cur)}</div></div>
-          <div class="pos-item"><div class="pos-k">— ours (4% income)</div><div class="pos-v gold">${money(c.incomeKept, cur)}</div></div>
-          <div class="pos-item"><div class="pos-k">— ${diffPos ? 'still to go out to supplier' : 'company money fronted'}</div><div class="pos-v ${diffPos ? 'navy' : 'red'}">${money(Math.abs(diff), cur)}</div></div>
+          <div class="pos-item"><div class="pos-k">Cash held now ${info('Money currently with us for this deal: ' + money(c.totalReceived, cur) + ' received from the client less ' + money(paidToSupplier, cur) + ' already paid out to the supplier. Part of this is still the supplier\'s and will go out; what stays is our income.')}</div><div class="pos-v">${money(held, cur)}</div></div>
+          <div class="pos-item"><div class="pos-k">Our income on this deal ${info('The full markup on this deal: our invoice ' + money(deal.invoice_total, cur) + ' less the supplier proforma ' + money(deal.proforma_total, cur) + '. Of this, ' + money(c.incomeKept, cur) + ' has been earned so far as the client pays, and ' + money(c.incomeRemaining, cur) + ' is still to come.')}</div><div class="pos-v gold">${money(c.feeTotal, cur)}<span class="pos-pct"> · ${money(c.incomeKept, cur)} earned</span></div></div>
+          <div class="pos-item"><div class="pos-k">Still to come in ${info('What the client has yet to pay us on this deal.')}</div><div class="pos-v ${c.customerBalance > 0.005 ? 'amber' : 'green'}">${money(c.customerBalance, cur)}</div></div>
           ` : `
           <div class="pos-item"><div class="pos-k">Agreed 4% fee (total)</div><div class="pos-v">${money(c.feeTotal, cur)}</div></div>
           <div class="pos-item"><div class="pos-k">Fee paid so far ${info('Your invoice includes our agreed 4% fee. Every payment you make covers a proportional share of it, so this is how much of the fee your payments have already covered.')}</div><div class="pos-v gold">${money(c.feePaid, cur)}</div></div>
@@ -753,9 +747,9 @@ function paymentsCard(d, cur, ro) {
         ${row(isAdmin() ? 'Total received from client' : 'Total you have paid', money(c.totalReceived, cur), 'green')}
         ${row('Total paid to supplier', money(paidOut, cur))}
         ${row(isAdmin() ? 'Still to collect' : 'Still to pay', money(c.customerBalance, cur), c.customerBalance > 0.005 ? 'amber' : 'green')}
-        ${isAdmin() ? row('Cash held in-house', money(c.heldInHouse, cur)) : ''}
-        ${isAdmin() ? row('— ours (4% income)', money(c.incomeKept, cur), 'gold') : row('4% fee paid so far', money(c.feePaid, cur), 'gold')}
-        ${isAdmin() ? row('— still to go out to supplier', money(Math.max(0, c.supplierShareHeld), cur)) : row('4% fee remaining', money(c.feeRemaining, cur), c.feeRemaining > 0.005 ? 'amber' : 'green')}
+        ${isAdmin() ? row('Cash held now', money(c.heldInHouse, cur)) : ''}
+        ${isAdmin() ? row('Our income on this deal', money(c.feeTotal, cur) + '  (' + money(c.incomeKept, cur) + ' earned)', 'gold') : row('4% fee paid so far', money(c.feePaid, cur), 'gold')}
+        ${isAdmin() ? row('Still to come in', money(c.customerBalance, cur), c.customerBalance > 0.005 ? 'amber' : 'green') : row('4% fee remaining', money(c.feeRemaining, cur), c.feeRemaining > 0.005 ? 'amber' : 'green')}
       </div>
       ${sectionCustomerJourneyRows(d, cur)}
     `)}`;
