@@ -382,7 +382,7 @@ async function renderDeal() {
     ? `<div class="alert err"><b>Funding difference.</b> Open supplier cost exceeds the reserve held by ${money(c.supplierFundingShortfall, cur)}. Forecast profit ${money(c.forecastProfit, cur)} vs 4% target ${money(c.targetProfit, cur)} (${money(c.profitVsTarget, cur)}).</div>` : '';
 
   const paidToSupplier = (c.supplierInvoicePaid || 0) + (c.supplierPrepaySent || 0);
-  const supplierOwed = c.supplierInvoicesGross > 0 ? c.supplierInvoicesGross : deal.proforma_total;
+  const supplierOwed = c.supplierOwed != null ? c.supplierOwed : (deal.proforma_total || 0);
   const recvPct = deal.invoice_total > 0 ? Math.min(100, c.totalReceived / deal.invoice_total * 100) : 0;
   const paidPct = supplierOwed > 0 ? Math.min(100, paidToSupplier / supplierOwed * 100) : 0;
   const incPct = c.incomeExpectedTotal > 0 ? Math.min(100, c.incomeKept / c.incomeExpectedTotal * 100) : 0;
@@ -424,20 +424,41 @@ async function renderDeal() {
       <div class="flow-arrow">→</div>
       <div class="flow-node europa">
         <div class="flow-role">Europa · us</div>
-        <div class="flow-name">Our income &nbsp;(4%)</div>
-        <div class="flow-big gold">${money(c.incomeKept, cur)}</div>
-        <div class="flow-sub">of ${money(c.incomeExpectedTotal, cur)} expected</div>
-        <div class="progress gold"><span style="width:${incPct}%"></span></div>
-        ${c.supplierFundingShortfall > 0.005 ? `<div class="flow-tag red">Funding gap ${money(c.supplierFundingShortfall, cur)}</div>` : ''}
+        ${isAdmin() ? `
+          <div class="flow-name">Our income ${info('Cash held in-house is ' + money(c.heldInHouse, cur) + '. Of that, ' + money(c.incomeKept, cur) + ' is our own 4% income and ' + money(Math.max(0, c.supplierShareHeld), cur) + ' is the supplier\'s share still sitting with us, which still has to go out.')}</div>
+          <div class="flow-big gold">${money(c.incomeKept, cur)}</div>
+          <div class="flow-sub">of ${money(c.incomeExpectedTotal, cur)} expected</div>
+          <div class="progress gold"><span style="width:${incPct}%"></span></div>
+          <div class="held-split">
+            <div class="hs-bar">
+              <span class="hs-ours" style="width:${c.heldInHouse > 0 ? Math.min(100, Math.max(0, c.incomeKept) / c.heldInHouse * 100) : 0}%"></span>
+              <span class="hs-theirs" style="width:${c.heldInHouse > 0 ? Math.min(100, Math.max(0, c.supplierShareHeld) / c.heldInHouse * 100) : 0}%"></span>
+            </div>
+            <div class="hs-legend">
+              <span><i class="dot ours"></i> ours ${money(Math.max(0, c.incomeKept), cur)}</span>
+              <span><i class="dot theirs"></i> to go out ${money(Math.max(0, c.supplierShareHeld), cur)}</span>
+            </div>
+            <div class="hs-total">Held in-house ${money(c.heldInHouse, cur)}</div>
+          </div>
+          ${c.companyMoneyFronted > 0.005 ? `<div class="flow-tag red">Fronted ${money(c.companyMoneyFronted, cur)}</div>` : ''}
+        ` : `
+          <div class="flow-name">Agreed 4% fee ${info('Your invoice includes our agreed 4% fee, currently ' + money(c.feeTotal, cur) + ' in total. Each payment you make covers a proportional share of it. So far ' + money(c.feePaid, cur) + ' of the fee has been covered and ' + money(c.feeRemaining, cur) + ' is still outstanding.')}</div>
+          <div class="flow-big gold">${money(c.feePaid, cur)}</div>
+          <div class="flow-sub">of ${money(c.feeTotal, cur)} fee paid</div>
+          <div class="progress gold"><span style="width:${Math.min(100, c.feePct || 0)}%"></span></div>
+          <div class="flow-tag ${c.feeRemaining > 0.005 ? 'amber' : 'green'}">${c.feeRemaining > 0.005 ? 'Fee remaining ' + money(c.feeRemaining, cur) : 'Fee fully paid'}</div>
+        `}
       </div>
       <div class="flow-arrow">→</div>
       <div class="flow-node">
         <div class="flow-role">Supplier</div>
         <div class="flow-name">${esc(deal.supplier_name)}</div>
         <div class="flow-big blue">${money(paidToSupplier, cur)}</div>
-        <div class="flow-sub">paid of ${money(supplierOwed, cur)} owed</div>
-        <div class="progress blue"><span style="width:${paidPct}%"></span></div>
-        ${c.supplierInvoicesOpen > 0.005 ? `<div class="flow-tag amber">Open to be paid ${money(c.supplierInvoicesOpen, cur)}</div>` : `<div class="flow-tag green">Nothing open</div>`}
+        ${isAdmin() ? `
+          <div class="flow-sub">paid of ${money(supplierOwed, cur)} owed</div>
+          <div class="progress blue"><span style="width:${paidPct}%"></span></div>
+          ${c.supplierOpenToPay > 0.005 ? `<div class="flow-tag amber">Open to be paid ${money(c.supplierOpenToPay, cur)}</div>` : `<div class="flow-tag green">Nothing open</div>`}
+        ` : `<div class="flow-sub">paid out to the supplier so far</div>`}
       </div>
     </div>
 
@@ -449,15 +470,21 @@ async function renderDeal() {
       const recPct = deal.invoice_total > 0 ? Math.round(c.totalReceived / deal.invoice_total * 100) : 0;
       return `<div class="position">
         <div class="pos-group">
-          <div class="pos-item"><div class="pos-k">Expected to receive</div><div class="pos-v">${money(deal.invoice_total, cur)}</div></div>
-          <div class="pos-item"><div class="pos-k">Received so far</div><div class="pos-v green">${money(c.totalReceived, cur)} <span class="pos-pct">${recPct}%</span></div></div>
-          <div class="pos-item"><div class="pos-k">Still expecting to collect</div><div class="pos-v ${c.customerBalance > 0.005 ? 'amber' : 'green'}">${money(c.customerBalance, cur)}</div></div>
+          <div class="pos-item"><div class="pos-k">${isAdmin() ? 'Expected to receive' : 'Order value'}</div><div class="pos-v">${money(deal.invoice_total, cur)}</div></div>
+          <div class="pos-item"><div class="pos-k">${isAdmin() ? 'Received so far' : 'Paid by you so far'}</div><div class="pos-v green">${money(c.totalReceived, cur)} <span class="pos-pct">${recPct}%</span></div></div>
+          <div class="pos-item"><div class="pos-k">${isAdmin() ? 'Still expecting to collect' : 'Still to pay'}</div><div class="pos-v ${c.customerBalance > 0.005 ? 'amber' : 'green'}">${money(c.customerBalance, cur)}</div></div>
         </div>
         <div class="pos-divider"></div>
         <div class="pos-group">
-          <div class="pos-item"><div class="pos-k">Cash held in-house now</div><div class="pos-v">${money(held, cur)}</div></div>
-          <div class="pos-item"><div class="pos-k">Of which our income (4%)</div><div class="pos-v gold">${money(c.incomeKept, cur)}</div></div>
-          <div class="pos-item"><div class="pos-k">${diffPos ? "Supplier's share still held" : 'Company money fronted'}</div><div class="pos-v ${diffPos ? 'navy' : 'red'}">${money(Math.abs(diff), cur)}</div></div>
+          ${isAdmin() ? `
+          <div class="pos-item"><div class="pos-k">Cash held in-house now ${info('Of the ' + money(held, cur) + ' currently held, ' + money(Math.max(0, c.incomeKept), cur) + ' is our own 4% income and ' + money(Math.max(0, diff), cur) + ' is supplier money that still has to go out.')}</div><div class="pos-v">${money(held, cur)}</div></div>
+          <div class="pos-item"><div class="pos-k">— ours (4% income)</div><div class="pos-v gold">${money(c.incomeKept, cur)}</div></div>
+          <div class="pos-item"><div class="pos-k">— ${diffPos ? 'still to go out to supplier' : 'company money fronted'}</div><div class="pos-v ${diffPos ? 'navy' : 'red'}">${money(Math.abs(diff), cur)}</div></div>
+          ` : `
+          <div class="pos-item"><div class="pos-k">Agreed 4% fee (total)</div><div class="pos-v">${money(c.feeTotal, cur)}</div></div>
+          <div class="pos-item"><div class="pos-k">Fee paid so far ${info('Your invoice includes our agreed 4% fee. Every payment you make covers a proportional share of it, so this is how much of the fee your payments have already covered.')}</div><div class="pos-v gold">${money(c.feePaid, cur)}</div></div>
+          <div class="pos-item"><div class="pos-k">Fee remaining</div><div class="pos-v ${c.feeRemaining > 0.005 ? 'amber' : 'green'}">${money(c.feeRemaining, cur)}</div></div>
+          `}
         </div>
       </div>`;
     })()}
@@ -469,6 +496,9 @@ async function renderDeal() {
       <button class="btn ${isAdmin() ? '' : 'primary'} big-btn" id="q-delivery">＋&nbsp; Add a delivery</button>
     </div>
     ${isOffice() ? `<div class="meta" style="margin-top:8px">Financial entries are made by an administrator. Deliveries you add are sent for approval.</div>` : ''}` : ''}
+
+    <!-- PAYMENT JOURNEY: money in and money out, always visible -->
+    ${paymentsCard(d, cur, ro)}
 
     <!-- DELIVERY LAYER (separate from money) -->
     ${deliveryCard(d, cur)}
@@ -485,10 +515,6 @@ async function renderDeal() {
     <button class="collapse-h details-main" id="details-toggle" style="margin-top:26px"><span class="chev">▶</span> Show full details &amp; history</button>
     <div id="details-body" class="hidden" style="margin-top:14px">
       ${sectionCustomerPrepay(c, cur, ro)}
-      ${sectionSupplierPrepay(c, cur, ro)}
-      ${sectionCustomerJourney(d, cur, ro)}
-      ${sectionSupplierInvoices(d, cur, ro)}
-      ${sectionSupplierPayments(d, cur, ro)}
       ${sectionCloseout(c, cur, deal)}
       ${sectionDocuments(d, cur)}
       ${sectionAudit()}
@@ -673,6 +699,74 @@ function sectionSupplierPayments(d, cur, ro) {
   const table = `<table class="grid"><thead><tr><th>Date</th><th class="num">Amount</th><th>Ref</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   const addBtn = !ro && canWrite() ? `<button class="btn sm primary" data-next="add-supp-pay">Record payment to supplier</button>` : '';
   return card('Payments to supplier', head + table, addBtn);
+}
+
+/* ---- Payments card: money IN from client, money OUT to supplier ---- */
+function paymentsCard(d, cur, ro) {
+  const c = d.computed;
+  const ins = d.customerPayments.filter((p) => p.status !== 'void');
+  const outs = d.supplierPayments.filter((p) => p.status !== 'void');
+  const paidOut = outs.reduce((a, p) => a + Number(p.amount || 0), 0);
+
+  const inRows = ins.length ? ins.map((p) => `
+    <div class="pay-row in">
+      <div class="pay-when">${fdate(p.date)}${p.status === 'pending' ? ' <span class="pill amber">pending</span>' : ''}</div>
+      <div class="pay-what">Received from ${esc(d.deal.customer_name)}${p.bank_ref ? ` <span class="meta">· ${esc(p.bank_ref)}</span>` : ''}
+        ${p.kept !== undefined ? `<div class="meta">includes ${money(p.kept, cur)} of the 4% fee</div>` : ''}</div>
+      <div class="pay-amt green">+ ${money(p.amount_received, cur)}</div>
+      <div class="pay-act">
+        ${docFor(d, 'customer_payment', p.id) ? `<span class="pill green">proof</span>` : `<span class="pill gray">no proof</span>`}
+        ${isAdmin() && !ro ? `<button class="btn sm" data-upload='${uploadAttr('customer_payment', p.id)}'>Proof</button>
+        <button class="btn sm danger" data-void='customer_payment:${p.id}'>Void</button>` : ''}
+      </div>
+    </div>`).join('') : '<div class="meta" style="padding:8px 0">No payments received yet.</div>';
+
+  const outRows = outs.length ? outs.map((p) => `
+    <div class="pay-row out">
+      <div class="pay-when">${fdate(p.date)}${p.status === 'pending' ? ' <span class="pill amber">pending</span>' : ''}</div>
+      <div class="pay-what">Paid to ${esc(d.deal.supplier_name)}${p.bank_ref ? ` <span class="meta">· ${esc(p.bank_ref)}</span>` : ''}</div>
+      <div class="pay-amt blue">− ${money(p.amount, cur)}</div>
+      <div class="pay-act">
+        ${docFor(d, 'supplier_payment', p.id) ? `<span class="pill green">proof</span>` : `<span class="pill gray">no proof</span>`}
+        ${isAdmin() && !ro ? `<button class="btn sm" data-upload='${uploadAttr('supplier_payment', p.id)}'>Proof</button>
+        <button class="btn sm danger" data-void='supplier_payment:${p.id}'>Void</button>` : ''}
+      </div>
+    </div>`).join('') : '<div class="meta" style="padding:8px 0">No payments sent yet.</div>';
+
+  const body = `
+    <div class="pay-split">
+      <div class="pay-col">
+        <div class="pay-head"><span class="pay-title in">Payments in</span><b class="green">${money(c.totalReceived, cur)}</b></div>
+        ${inRows}
+      </div>
+      <div class="pay-col">
+        <div class="pay-head"><span class="pay-title out">Payments out</span><b class="blue">${money(paidOut, cur)}</b></div>
+        ${outRows}
+      </div>
+    </div>
+    ${collapsible('pay-detail', 'Show payment details', `
+      <div class="rowset">
+        ${row(isAdmin() ? 'Total received from client' : 'Total you have paid', money(c.totalReceived, cur), 'green')}
+        ${row('Total paid to supplier', money(paidOut, cur))}
+        ${row(isAdmin() ? 'Still to collect' : 'Still to pay', money(c.customerBalance, cur), c.customerBalance > 0.005 ? 'amber' : 'green')}
+        ${isAdmin() ? row('Cash held in-house', money(c.heldInHouse, cur)) : ''}
+        ${isAdmin() ? row('— ours (4% income)', money(c.incomeKept, cur), 'gold') : row('4% fee paid so far', money(c.feePaid, cur), 'gold')}
+        ${isAdmin() ? row('— still to go out to supplier', money(Math.max(0, c.supplierShareHeld), cur)) : row('4% fee remaining', money(c.feeRemaining, cur), c.feeRemaining > 0.005 ? 'amber' : 'green')}
+      </div>
+      ${sectionCustomerJourneyRows(d, cur)}
+    `)}`;
+  const actions = isAdmin() && !ro
+    ? `<button class="btn sm primary" data-next="add-cust-pay">＋ Money in</button> <button class="btn sm" data-next="add-supp-pay">＋ Money out</button>`
+    : '';
+  return card('Payments', body, actions);
+}
+
+/* full per-payment breakdown, shown inside the details drop-down */
+function sectionCustomerJourneyRows(d, cur) {
+  const rows = d.customerPayments.filter((p) => p.status !== 'void');
+  if (!rows.length) return '';
+  return `<div class="section-title" style="margin:16px 0 8px">Each payment in detail</div>
+    <div class="journey">${rows.map((p) => custRow(p, cur, d)).join('')}</div>`;
 }
 
 /* ---- Delivery card (separate layer, no money) ---- */

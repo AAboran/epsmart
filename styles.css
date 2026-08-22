@@ -588,3 +588,31 @@ h1, h2, h3, h4, .card-h h3, .deal-head h2, .topbar h1, .empty h3, .modal-h h3, .
 .dc-income.warn { background: var(--amber-soft); border-color: #f5d9a8; }
 .dc-income.warn .k { color: var(--amber); }
 @media (max-width: 860px) { .ibtn::after { width: 210px; } }
+
+/* payments in / out card */
+.pay-split { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+.pay-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+  padding-bottom: 8px; margin-bottom: 6px; border-bottom: 2px solid var(--border); }
+.pay-head b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.pay-head b.green { color: var(--green); } .pay-head b.blue { color: var(--navy-2); }
+.pay-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; }
+.pay-title.in { color: var(--green); } .pay-title.out { color: var(--navy-2); }
+.pay-row { display: grid; grid-template-columns: 78px 1fr auto; gap: 8px 10px; align-items: center;
+  padding: 10px 0; border-bottom: 1px solid var(--border); }
+.pay-when { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pay-what { font-size: 13.5px; }
+.pay-amt { font-size: 15.5px; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+.pay-amt.green { color: var(--green); } .pay-amt.blue { color: var(--navy-2); }
+.pay-act { grid-column: 1 / -1; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+/* held-in-house split bar (admin) */
+.held-split { margin-top: 12px; text-align: left; }
+.hs-bar { display: flex; height: 9px; border-radius: 999px; overflow: hidden; background: var(--gray-soft); }
+.hs-ours { background: var(--gold); } .hs-theirs { background: var(--navy-2); }
+.hs-legend { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.hs-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+.hs-legend .dot.ours { background: var(--gold); } .hs-legend .dot.theirs { background: var(--navy-2); }
+.hs-total { margin-top: 4px; font-size: 11.5px; color: var(--muted); font-weight: 600; }
+.dc-income .meta { font-size: 11px; }
+
+@media (max-width: 860px) { .pay-split { grid-template-columns: 1fr; gap: 18px; } }

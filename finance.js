@@ -176,6 +176,15 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
   const clientUnderpaidToDate = round2(Math.max(0, clientDueToDate - totalReceived));
   const clientPaidAhead = round2(Math.max(0, totalReceived - clientDueToDate));
 
+  // ---- The agreed 4% fee, from the client's point of view ----
+  // She knows the invoice includes our 4%. Each payment she makes carries a
+  // proportional share of that fee, so we can show how much of the fee she has
+  // covered so far and how much is still outstanding.
+  const feeTotal = dealMargin;
+  const feePaid = incomeKept;
+  const feeRemaining = incomeRemaining;
+  const feePct = feeTotal > 0 ? round2((feePaid / feeTotal) * 100) : 0;
+
   // ---- Our position: cash in hand vs. our income ----
   const heldInHouse = round2(totalReceived - totalPaidToSupplier);
   const supplierShareHeld = round2(heldInHouse - incomeKept); // supplier money still with us
@@ -227,6 +236,11 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
     clientDueToDate,
     clientUnderpaidToDate,
     clientPaidAhead,
+    // agreed fee (client-facing)
+    feeTotal,
+    feePaid,
+    feeRemaining,
+    feePct,
     // position + profit
     heldInHouse,
     supplierShareHeld,

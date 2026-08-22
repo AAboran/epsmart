@@ -66,12 +66,19 @@ async function computeFor(deal) {
 }
 const entersLedger = (user) => user.role === 'admin';
 
-/** Fields only an administrator may ever see. */
+/**
+ * Fields only an administrator may ever see.
+ * NOTE: the "office" account is our CLIENT. She legitimately knows the invoice
+ * includes our agreed 4% fee, so fee figures (feeTotal/feePaid/feeRemaining)
+ * ARE shared with her. What stays private is our own cash position: how much
+ * money we are holding, the supplier's share of it, and any profit comparison.
+ */
 const PRIVATE_FIELDS = [
-  'incomeKept', 'incomeExpectedTotal', 'incomeRemaining', 'dealMargin', 'marginPct',
-  'heldInHouse', 'supplierShareHeld', 'companyMoneyFronted', 'forecastProfit',
-  'targetProfit', 'profitVsTarget', 'supplierReserveCollected', 'reserveAvailableForSupplier',
-  'rate', 'commissionRate', 'markupRatio',
+  'heldInHouse', 'supplierShareHeld', 'companyMoneyFronted',
+  'forecastProfit', 'targetProfit', 'profitVsTarget',
+  'supplierReserveCollected', 'reserveAvailableForSupplier',
+  'proformaTotal', 'supplierOwed', 'supplierOpenToPay', 'supplierOverpaid',
+  'deliveredProforma', 'proformaRemaining', 'markupRatio',
 ];
 function scrubComputed(c, user) {
   if (!c || user.role === 'admin') return c;
@@ -81,12 +88,15 @@ function scrubComputed(c, user) {
 }
 function scrubPayments(rows, user) {
   if (user.role === 'admin') return rows;
-  return (rows || []).map((r) => { const o = { ...r }; delete o.kept; delete o.reserved; return o; });
+  // The client may see the 4% share carried by her own payment, but not the
+  // portion we set aside for the supplier.
+  return (rows || []).map((r) => { const o = { ...r }; delete o.reserved; return o; });
 }
 function scrubDeal(deal, user) {
   if (user.role === 'admin') return deal;
   const o = { ...deal };
-  delete o.commission_rate;
+  delete o.proforma_total;          // supplier's price stays private
+  delete o.supplier_prepay_required;
   return o;
 }
 async function userName(id) {
@@ -190,6 +200,9 @@ app.get('/api/deals', requireAuth, wrap(async (req, res) => {
     totalCustomerBalance: sum((c) => c.customerBalance),
     totalSupplierOpen: sum((c) => c.supplierInvoicesOpen),
     totalUnderpaidToDate: sum((c) => c.clientUnderpaidToDate),
+    totalFee: sum((c) => c.feeTotal),
+    totalFeePaid: sum((c) => c.feePaid),
+    totalFeeRemaining: sum((c) => c.feeRemaining),
   };
   if (req.user.role === 'admin') {
     portfolio.totalIncomeKept = sum((c) => c.incomeKept);
@@ -593,19 +606,21 @@ app.get('/api/reports', requireAuth, wrap(async (req, res) => {
   const months = Object.values(monthsSet).sort((a, b) => a.m.localeCompare(b.m)).slice(-12);
 
   if (req.user.role !== 'admin') {
-    incomeKept = 0; incomeExpected = 0;
-    rows.forEach((r) => { delete r.income; delete r.incomeKept; });
+    rows.forEach((r) => { delete r.paid; });   // supplier payment totals per deal stay private here
     if (topIncome) topIncome = null;
+    biggest = biggest ? { ...biggest, paid: undefined } : biggest;
   }
   res.json({
     totals: {
       dealCount: deals.length,
       activeCount: deals.filter((d) => d.status === 'active').length,
       completedCount: deals.filter((d) => d.status === 'completed').length,
-      moneyIn: r2(moneyIn), moneyOut: r2(moneyOut),
+      moneyIn: r2(moneyIn),
+      ...(req.user.role === 'admin'
+        ? { moneyOut: r2(moneyOut), netCashHeld: r2(moneyIn - moneyOut), toPaySupplier: r2(toPay) }
+        : {}),
       incomeKept: r2(incomeKept), incomeExpected: r2(incomeExpected),
-      toCollect: r2(toCollect), toPaySupplier: r2(toPay), delivered: r2(delivered),
-      netCashHeld: r2(moneyIn - moneyOut),
+      toCollect: r2(toCollect), delivered: r2(delivered),
     },
     biggest, topIncome, months,
     deals: rows,
