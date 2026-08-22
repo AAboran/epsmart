@@ -435,8 +435,8 @@ async function renderDeal() {
           <div class="progress gold"><span style="width:${incPct}%"></span></div>
           <div class="mini3">
             <div class="m3"><span>Cash held now</span><b>${money(c.heldInHouse, cur)}</b></div>
-            <div class="m3"><span>Our income (total)</span><b class="gold">${money(c.feeTotal, cur)}</b></div>
-            <div class="m3"><span>Still to come in</span><b>${money(c.customerBalance, cur)}</b></div>
+            <div class="m3"><span>Income earned</span><b class="gold">${money(c.incomeKept, cur)}</b></div>
+            <div class="m3"><span>Income still to come</span><b>${money(c.incomeRemaining, cur)}</b></div>
           </div>
           ${c.companyMoneyFronted > 0.005 ? `<div class="flow-tag red">Fronted ${money(c.companyMoneyFronted, cur)}</div>` : ''}
         ` : `
@@ -476,8 +476,8 @@ async function renderDeal() {
         <div class="pos-group">
           ${isAdmin() ? `
           <div class="pos-item"><div class="pos-k">Cash held now ${info('Money currently with us for this deal: ' + money(c.totalReceived, cur) + ' received from the client less ' + money(paidToSupplier, cur) + ' already paid out to the supplier. Part of this is still the supplier\'s and will go out; what stays is our income.')}</div><div class="pos-v">${money(held, cur)}</div></div>
-          <div class="pos-item"><div class="pos-k">Our income on this deal ${info('The full markup on this deal: our invoice ' + money(deal.invoice_total, cur) + ' less the supplier proforma ' + money(deal.proforma_total, cur) + '. Of this, ' + money(c.incomeKept, cur) + ' has been earned so far as the client pays, and ' + money(c.incomeRemaining, cur) + ' is still to come.')}</div><div class="pos-v gold">${money(c.feeTotal, cur)}<span class="pos-pct"> · ${money(c.incomeKept, cur)} earned</span></div></div>
-          <div class="pos-item"><div class="pos-k">Still to come in ${info('What the client has yet to pay us on this deal.')}</div><div class="pos-v ${c.customerBalance > 0.005 ? 'amber' : 'green'}">${money(c.customerBalance, cur)}</div></div>
+          <div class="pos-item"><div class="pos-k">Our income earned ${info('Our total income on this deal is ' + money(c.feeTotal, cur) + ' (our invoice ' + money(deal.invoice_total, cur) + ' less the supplier proforma ' + money(deal.proforma_total, cur) + '). This is the part already earned, which grows as the client pays.')}</div><div class="pos-v gold">${money(c.incomeKept, cur)}<span class="pos-pct"> of ${money(c.feeTotal, cur)}</span></div></div>
+          <div class="pos-item"><div class="pos-k">Income still to come ${info('The rest of our income on this deal, still to be earned as the remaining payments arrive.')}</div><div class="pos-v ${c.incomeRemaining > 0.005 ? 'amber' : 'green'}">${money(c.incomeRemaining, cur)}</div></div>
           ` : `
           <div class="pos-item"><div class="pos-k">Agreed 4% fee (total)</div><div class="pos-v">${money(c.feeTotal, cur)}</div></div>
           <div class="pos-item"><div class="pos-k">Fee paid so far ${info('Your invoice includes our agreed 4% fee. Every payment you make covers a proportional share of it, so this is how much of the fee your payments have already covered.')}</div><div class="pos-v gold">${money(c.feePaid, cur)}</div></div>
@@ -748,8 +748,8 @@ function paymentsCard(d, cur, ro) {
         ${row('Total paid to supplier', money(paidOut, cur))}
         ${row(isAdmin() ? 'Still to collect' : 'Still to pay', money(c.customerBalance, cur), c.customerBalance > 0.005 ? 'amber' : 'green')}
         ${isAdmin() ? row('Cash held now', money(c.heldInHouse, cur)) : ''}
-        ${isAdmin() ? row('Our income on this deal', money(c.feeTotal, cur) + '  (' + money(c.incomeKept, cur) + ' earned)', 'gold') : row('4% fee paid so far', money(c.feePaid, cur), 'gold')}
-        ${isAdmin() ? row('Still to come in', money(c.customerBalance, cur), c.customerBalance > 0.005 ? 'amber' : 'green') : row('4% fee remaining', money(c.feeRemaining, cur), c.feeRemaining > 0.005 ? 'amber' : 'green')}
+        ${isAdmin() ? row('Our income earned', money(c.incomeKept, cur) + ' of ' + money(c.feeTotal, cur), 'gold') : row('4% fee paid so far', money(c.feePaid, cur), 'gold')}
+        ${isAdmin() ? row('Income still to come', money(c.incomeRemaining, cur), c.incomeRemaining > 0.005 ? 'amber' : 'green') : row('4% fee remaining', money(c.feeRemaining, cur), c.feeRemaining > 0.005 ? 'amber' : 'green')}
       </div>
       ${sectionCustomerJourneyRows(d, cur)}
     `)}`;
