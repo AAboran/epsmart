@@ -169,6 +169,13 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
   const overDelivery = round2(Math.max(0, deliveredClient - deliveryTarget));
   const proformaRemaining = round2(Math.max(0, proformaTotal - deliveredProforma));
 
+  // ---- Client settlement view (what the client owes us) ----
+  // The client agreed to pay the supplier price plus our markup. Measured
+  // against the goods actually delivered so far, this is what they are short.
+  const clientDueToDate = round2(Math.min(invoiceTotal, deliveredClient));
+  const clientUnderpaidToDate = round2(Math.max(0, clientDueToDate - totalReceived));
+  const clientPaidAhead = round2(Math.max(0, totalReceived - clientDueToDate));
+
   // ---- Our position: cash in hand vs. our income ----
   const heldInHouse = round2(totalReceived - totalPaidToSupplier);
   const supplierShareHeld = round2(heldInHouse - incomeKept); // supplier money still with us
@@ -216,6 +223,10 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
     deliveryPct,
     deliveryOutstanding,
     overDelivery,
+    // client settlement
+    clientDueToDate,
+    clientUnderpaidToDate,
+    clientPaidAhead,
     // position + profit
     heldInHouse,
     supplierShareHeld,

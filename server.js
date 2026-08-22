@@ -65,6 +65,30 @@ async function computeFor(deal) {
   return { entries: e, computed: c, nextAction: action };
 }
 const entersLedger = (user) => user.role === 'admin';
+
+/** Fields only an administrator may ever see. */
+const PRIVATE_FIELDS = [
+  'incomeKept', 'incomeExpectedTotal', 'incomeRemaining', 'dealMargin', 'marginPct',
+  'heldInHouse', 'supplierShareHeld', 'companyMoneyFronted', 'forecastProfit',
+  'targetProfit', 'profitVsTarget', 'supplierReserveCollected', 'reserveAvailableForSupplier',
+  'rate', 'commissionRate', 'markupRatio',
+];
+function scrubComputed(c, user) {
+  if (!c || user.role === 'admin') return c;
+  const out = { ...c };
+  PRIVATE_FIELDS.forEach((f) => { delete out[f]; });
+  return out;
+}
+function scrubPayments(rows, user) {
+  if (user.role === 'admin') return rows;
+  return (rows || []).map((r) => { const o = { ...r }; delete o.kept; delete o.reserved; return o; });
+}
+function scrubDeal(deal, user) {
+  if (user.role === 'admin') return deal;
+  const o = { ...deal };
+  delete o.commission_rate;
+  return o;
+}
 async function userName(id) {
   const r = (await query('SELECT name FROM users WHERE id=$1', [id])).rows[0];
   return r ? r.name : 'Unknown';
@@ -152,7 +176,8 @@ app.get('/api/deals', requireAuth, wrap(async (req, res) => {
     out.push({
       id: d.id, ref: d.ref, title: d.title, customer_name: d.customer_name, supplier_name: d.supplier_name,
       currency: d.currency, status: d.status, proforma_total: d.proforma_total, invoice_total: d.invoice_total,
-      customer_prepay_required: d.customer_prepay_required, computed, nextAction,
+      customer_prepay_required: d.customer_prepay_required,
+      computed: scrubComputed(computed, req.user), nextAction,
     });
   }
   out.sort((a, b) => a.nextAction.priority - b.nextAction.priority);
@@ -164,10 +189,13 @@ app.get('/api/deals', requireAuth, wrap(async (req, res) => {
     totalReceived: sum((c) => c.totalReceived),
     totalCustomerBalance: sum((c) => c.customerBalance),
     totalSupplierOpen: sum((c) => c.supplierInvoicesOpen),
-    totalIncomeKept: sum((c) => c.incomeKept),
-    totalIncomeExpected: sum((c) => c.incomeExpectedTotal),
-    totalIncomeExpectedRemaining: sum((c) => c.incomeRemaining),
+    totalUnderpaidToDate: sum((c) => c.clientUnderpaidToDate),
   };
+  if (req.user.role === 'admin') {
+    portfolio.totalIncomeKept = sum((c) => c.incomeKept);
+    portfolio.totalIncomeExpected = sum((c) => c.incomeExpectedTotal);
+    portfolio.totalIncomeExpectedRemaining = sum((c) => c.incomeRemaining);
+  }
   res.json({ deals: out, portfolio });
 }));
 
@@ -177,7 +205,11 @@ app.get('/api/deals/:id', requireAuth, wrap(async (req, res) => {
   const { entries, computed, nextAction } = await computeFor(d);
   const pend = (await query("SELECT * FROM approvals WHERE deal_id=$1 AND status='pending' ORDER BY created_at DESC", [d.id])).rows;
   for (const a of pend) a.requested_by_name = await userName(a.requested_by);
-  res.json({ deal: d, ...entries, computed, nextAction, pendingApprovals: pend });
+  res.json({
+    deal: scrubDeal(d, req.user), ...entries,
+    customerPayments: scrubPayments(entries.customerPayments, req.user),
+    computed: scrubComputed(computed, req.user), nextAction, pendingApprovals: pend,
+  });
 }));
 
 app.post('/api/deals', requireAuth, requireRole('admin', 'office'), wrap(async (req, res) => {
@@ -475,6 +507,28 @@ app.get('/api/documents/:id/file', requireAuth, wrap(async (req, res) => {
   res.send(doc.content); // bytea -> Buffer
 }));
 
+// ---------- delivery payment status (tracking flag, not a ledger entry) ----------
+app.patch('/api/deliveries/:id/payment', requireAuth, requireRole('admin', 'office'), wrap(async (req, res) => {
+  const row = (await query('SELECT * FROM supplier_invoices WHERE id=$1', [Number(req.params.id)])).rows[0];
+  if (!row) return res.status(404).json({ error: 'Delivery not found.' });
+  const b = req.body || {};
+  const status = b.status === 'paid' ? 'paid' : 'unpaid';
+  if (status === 'paid') {
+    const paidDate = b.date || new Date().toISOString().slice(0, 10);
+    await query("UPDATE supplier_invoices SET pay_status='paid', paid_date=$1, planned_pay_date=NULL WHERE id=$2", [paidDate, row.id]);
+    await audit(row.deal_id, req.user, 'delivery_marked_paid', 'supplier_invoice', row.id, { date: paidDate });
+    await notify(['admin'], row.deal_id, 'Delivery marked as paid',
+      `Delivery ${row.invoice_number} marked paid on ${paidDate} by ${req.user.name}.`, 'money', req.user.id);
+  } else {
+    if (!b.date) return res.status(400).json({ error: 'Set the date you plan to pay this delivery.' });
+    await query("UPDATE supplier_invoices SET pay_status='unpaid', planned_pay_date=$1, paid_date=NULL WHERE id=$2", [b.date, row.id]);
+    await audit(row.deal_id, req.user, 'delivery_payment_planned', 'supplier_invoice', row.id, { date: b.date });
+    await notify(['admin'], row.deal_id, 'Delivery payment date set',
+      `Delivery ${row.invoice_number} planned for payment on ${b.date}.`, 'info', req.user.id);
+  }
+  res.json({ ok: true });
+}));
+
 // ---------- notifications ----------
 app.get('/api/notifications', requireAuth, wrap(async (req, res) => {
   const rows = (await query(
@@ -538,6 +592,11 @@ app.get('/api/reports', requireAuth, wrap(async (req, res) => {
   outByMonth.forEach((x) => { monthsSet[x.m] = monthsSet[x.m] || { m: x.m, in: 0, out: 0 }; monthsSet[x.m].out = r2(Number(x.s)); });
   const months = Object.values(monthsSet).sort((a, b) => a.m.localeCompare(b.m)).slice(-12);
 
+  if (req.user.role !== 'admin') {
+    incomeKept = 0; incomeExpected = 0;
+    rows.forEach((r) => { delete r.income; delete r.incomeKept; });
+    if (topIncome) topIncome = null;
+  }
   res.json({
     totals: {
       dealCount: deals.length,

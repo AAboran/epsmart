@@ -172,6 +172,13 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 `;
 
+// Additive migrations for databases created by earlier versions.
+const MIGRATIONS = `
+ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS pay_status TEXT NOT NULL DEFAULT 'unpaid';
+ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS paid_date TEXT;
+ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS planned_pay_date TEXT;
+`;
+
 let readyPromise = null;
 async function ensureReady() {
   if (!readyPromise) readyPromise = init();
@@ -180,6 +187,7 @@ async function ensureReady() {
 
 async function init() {
   await pool.query(SCHEMA);
+  await pool.query(MIGRATIONS);
   await seed();
 }
 

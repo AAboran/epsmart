@@ -194,7 +194,9 @@ async function renderDeals() {
       <div class="stat"><div class="label">Active deals</div><div class="value">${p.activeDeals}</div></div>
       <div class="stat"><div class="label">Received of invoiced</div><div class="value green tnum">${money(p.totalReceived)}</div><div class="stat-sub">of ${money(p.totalInvoiced)}${p.totalInvoiced > 0 ? ' · ' + Math.round(p.totalReceived / p.totalInvoiced * 100) + '%' : ''}</div></div>
       <div class="stat"><div class="label">Still expecting to collect</div><div class="value tnum">${money(p.totalCustomerBalance)}</div></div>
-      <div class="stat"><div class="label">Our income kept</div><div class="value gold tnum">${money(p.totalIncomeKept)}</div><div class="stat-sub">of ${money(p.totalIncomeExpected)} expected</div></div>
+      ${isAdmin()
+        ? `<div class="stat"><div class="label">Our income kept</div><div class="value gold tnum">${money(p.totalIncomeKept)}</div><div class="stat-sub">of ${money(p.totalIncomeExpected)} expected</div></div>`
+        : `<div class="stat"><div class="label">Unpaid for delivered goods</div><div class="value tnum">${money(p.totalUnderpaidToDate || 0)}</div></div>`}
     </div>
     ${data.deals.length ? `<div class="deal-list">${cards}</div>` :
       `<div class="empty"><h3>No active deals yet</h3><p>${canWrite() ? 'Create your first deal to start tracking payments and deliveries.' : 'Deals will appear here once created.'}</p></div>`}
@@ -238,7 +240,9 @@ function dealCard(d) {
         </div>
       </div>
       <div class="dc-side">
-        <div class="dc-income"><div class="k">Our income (4%)</div><div class="v green">${money(c.incomeKept, cur)}</div></div>
+        ${isAdmin()
+          ? `<div class="dc-income"><div class="k">Our income</div><div class="v">${money(c.incomeKept, cur)}</div></div>`
+          : `<div class="dc-income ${c.clientUnderpaidToDate > 0.005 ? 'warn' : ''}"><div class="k">Unpaid for delivered</div><div class="v">${money(c.clientUnderpaidToDate, cur)}</div></div>`}
         <div class="next-action ${naClass}">
           <div class="k">Next action</div>
           <div class="v">${esc(na.label)}</div>
@@ -391,11 +395,19 @@ async function renderDeal() {
     </div>
     <div class="parties muted" style="margin-bottom:6px">${esc(deal.customer_name)} &nbsp;→&nbsp; ${esc(deal.supplier_name)}</div>
     <div class="derive-line">
-      <span class="dl-chip">Supplier proforma <b>${money(deal.proforma_total, cur)}</b></span>
-      <span class="dl-plus">+ ${c.marginPct ? c.marginPct.toFixed(2).replace(/\.00$/, '') : 4}%</span>
-      <span class="dl-chip">Our invoice to client <b>${money(deal.invoice_total, cur)}</b></span>
-      <span class="dl-eq">=</span>
-      <span class="dl-chip gold">Our income <b>${money(c.dealMargin, cur)}</b></span>
+      ${isAdmin() ? `
+        <span class="dl-chip">Supplier proforma <b>${money(deal.proforma_total, cur)}</b></span>
+        <span class="dl-plus">+ ${c.marginPct ? c.marginPct.toFixed(2).replace(/\.00$/, '') : 4}%</span>
+        <span class="dl-chip">Our invoice to client <b>${money(deal.invoice_total, cur)}</b></span>
+        <span class="dl-eq">=</span>
+        <span class="dl-chip gold">Our income <b>${money(c.dealMargin, cur)}</b></span>
+      ` : `
+        <span class="dl-chip">Agreed order value <b>${money(deal.invoice_total, cur)}</b></span>
+        <span class="dl-eq">·</span>
+        <span class="dl-chip">Delivered <b>${money(c.deliveredClient, cur)}</b></span>
+        <span class="dl-eq">·</span>
+        <span class="dl-chip">Received <b>${money(c.totalReceived, cur)}</b></span>
+      `}
     </div>
     ${!ro ? `<div class="nextline"><span class="nextline-k">Next:</span> ${esc(na.label)}</div>` : ''}
 
@@ -564,8 +576,9 @@ function custRow(p, cur, d) {
       <div class="jrow-figs">
         <div><div class="k">Money received</div><div class="v tnum">${money(p.amount_received, cur)}</div></div>
         <div><div class="k">Applied to deal</div><div class="v tnum">${money(p.amount_applied, cur)}</div></div>
+        ${isAdmin() ? `
         <div><div class="k">Our income</div><div class="v tnum gold">${money(p.kept, cur)}</div></div>
-        <div><div class="k">For supplier</div><div class="v tnum">${money(p.reserved, cur)}</div></div>
+        <div><div class="k">For supplier</div><div class="v tnum">${money(p.reserved, cur)}</div></div>` : ''}
         ${p.overpayment > 0 ? `<div><div class="k">Overpayment</div><div class="v tnum">${money(p.overpayment, cur)}</div></div>` : ''}
       </div>
       ${p.void_reason ? `<div class="meta" style="margin-top:8px">Void reason: ${esc(p.void_reason)}</div>` : ''}
@@ -579,7 +592,7 @@ function deliveriesTable(d, cur) {
   if (!invs.length) return `<div class="empty small">No deliveries recorded yet.</div>`;
   return `
     <table class="grid">
-      <thead><tr><th>Delivery / invoice #</th><th>Date</th><th class="num">Proforma value</th><th class="num">Client value</th><th>Qty</th><th></th></tr></thead>
+      <thead><tr><th>Delivery / invoice #</th><th>Date</th><th class="num">Proforma value</th><th class="num">Client value</th><th>Payment</th><th></th></tr></thead>
       <tbody>
       ${invs.map((i) => {
         const proof = docFor(d, 'supplier_invoice', i.id);
@@ -588,7 +601,7 @@ function deliveriesTable(d, cur) {
           <td data-label="Date">${fdate(i.delivery_date || i.issue_date)}</td>
           <td class="num" data-label="Proforma value">${money(i.proforma_allocated, cur)}</td>
           <td class="num" data-label="Client value">${money(i.customer_sales_value, cur)}</td>
-          <td data-label="Qty">${esc(i.quantity || '—')}</td>
+          <td data-label="Payment">${payCell(i)}</td>
           <td class="num" data-label="">
             ${canWrite() && i.status !== 'void' ? `<button class="btn sm" data-upload='${uploadAttr('supplier_invoice', i.id)}'>File</button>` : ''}
             ${isAdmin() && i.status === 'posted' ? `<button class="btn sm danger" data-void='supplier_invoice:${i.id}'>Void</button>` : ''}
@@ -599,6 +612,43 @@ function deliveriesTable(d, cur) {
     </table>`;
 }
 function sectionSupplierInvoices() { return ''; /* deliveries now shown in their own card */ }
+
+/* Payment marker for a delivery: paid (with date) or a planned payment date. */
+function payCell(i) {
+  const paid = i.pay_status === 'paid';
+  const canEdit = canWrite() && i.status !== 'void';
+  if (paid) {
+    return `<span class="pill green">Paid ${fdate(i.paid_date)}</span>` +
+      (canEdit ? ` <button class="btn sm" data-payplan="${i.id}">Change</button>` : '');
+  }
+  const planned = i.planned_pay_date
+    ? `<span class="pill amber">Plan: ${fdate(i.planned_pay_date)}</span>`
+    : `<span class="pill gray">Not paid</span>`;
+  if (!canEdit) return planned;
+  return `${planned} <button class="btn sm" data-paypaid="${i.id}">Mark paid</button> <button class="btn sm" data-payplan="${i.id}">${i.planned_pay_date ? 'Change date' : 'Set date'}</button>`;
+}
+
+function markPaidModal(id) {
+  const body = `<div class="field"><label>Date paid</label><input id="mp_date" type="date" value="${today()}" /></div>
+    <div id="mp_err" class="alert err hidden"></div>`;
+  const close = openModal('Mark delivery as paid', body, `<button class="btn" id="mp_no">Cancel</button><button class="btn primary" id="mp_yes">Mark paid</button>`);
+  document.getElementById('mp_no').onclick = close;
+  document.getElementById('mp_yes').onclick = async () => {
+    try { await api('/deliveries/' + id + '/payment', { method: 'PATCH', body: { status: 'paid', date: v('mp_date') } }); close(); ok('Marked as paid.'); renderDeal(); }
+    catch (e) { showErr('mp_err', e.message); }
+  };
+}
+function planPayModal(id) {
+  const body = `<p class="small muted">Not paid yet? Record when you plan to pay this delivery.</p>
+    <div class="field"><label>Planned payment date</label><input id="pp_date" type="date" value="${today()}" /></div>
+    <div id="pp_err" class="alert err hidden"></div>`;
+  const close = openModal('Planned payment date', body, `<button class="btn" id="pp_no">Cancel</button><button class="btn primary" id="pp_yes">Save date</button>`);
+  document.getElementById('pp_no').onclick = close;
+  document.getElementById('pp_yes').onclick = async () => {
+    try { await api('/deliveries/' + id + '/payment', { method: 'PATCH', body: { status: 'unpaid', date: v('pp_date') } }); close(); ok('Planned date saved.'); renderDeal(); }
+    catch (e) { showErr('pp_err', e.message); }
+  };
+}
 
 /* ---- Section 5: supplier payments ---- */
 function sectionSupplierPayments(d, cur, ro) {
@@ -639,6 +689,8 @@ function deliveryCard(d, cur) {
         ${c.deliveryOutstanding > 0.005 ? `<span class="flow-tag amber">Awaiting ${money(c.deliveryOutstanding, cur)}</span>` : `<span class="flow-tag green">Fully delivered</span>`}
         ${c.overDelivery > 0.005 ? `<span class="flow-tag red">Over-delivered ${money(c.overDelivery, cur)}</span>` : ''}
         <span class="tag">${c.deliveryCount} batch${c.deliveryCount === 1 ? '' : 'es'}</span>
+        ${(() => { const un = (d.supplierInvoices || []).filter((x) => x.status === 'posted' && x.pay_status !== 'paid').length;
+          return un ? `<span class="flow-tag amber">${un} not marked paid</span>` : `<span class="flow-tag green">All marked paid</span>`; })()}
       </div>
     </div>
     <div class="progress ${c.overDelivery > 0 ? 'over' : ''}" style="height:10px;margin:10px 0 14px"><span style="width:${pctW}%"></span></div>
@@ -658,10 +710,16 @@ function sectionCloseout(c, cur, deal) {
       <div class="r"><div class="k"><b>Supplier</b></div><div class="v"></div></div>
       ${row('Open to be paid', money(c.supplierOpenToPay, cur), c.supplierOpenToPay > 0 ? 'amber' : 'green')}
       ${row('Overpaid to supplier', money(c.supplierOverpaid, cur), c.supplierOverpaid > 0 ? 'amber' : '')}
+      ${isAdmin() ? `
       <div class="r"><div class="k"><b>Our position</b></div><div class="v"></div></div>
       ${row('Cash held in-house', money(c.heldInHouse, cur))}
-      ${row('Our income (of margin)', money(c.incomeKept, cur) + ' / ' + money(c.incomeExpectedTotal, cur), 'gold')}
+      ${row('Our income', money(c.incomeKept, cur) + ' / ' + money(c.incomeExpectedTotal, cur), 'gold')}
       ${row(c.supplierShareHeld >= 0 ? "Supplier's share still held" : 'Company money fronted', money(Math.abs(c.supplierShareHeld), cur), c.supplierShareHeld >= 0 ? '' : 'red')}
+      ` : `
+      <div class="r"><div class="k"><b>Client settlement</b></div><div class="v"></div></div>
+      ${row('Delivered so far', money(c.clientDueToDate, cur))}
+      ${row('Unpaid for delivered goods', money(c.clientUnderpaidToDate, cur), c.clientUnderpaidToDate > 0.005 ? 'red' : 'green')}
+      `}
       <div class="r"><div class="k"><b>Delivery (tracking only)</b></div><div class="v"></div></div>
       ${row('Delivered', money(c.deliveredValue, cur) + ' (' + pct(c.deliveryPct) + ')', 'green')}
       ${c.deliveryOutstanding > 0 ? row('Awaiting delivery', money(c.deliveryOutstanding, cur), 'amber') : ''}
@@ -762,6 +820,8 @@ function wireDeal(d) {
   });
   document.querySelectorAll('[data-tileupload]').forEach((b) => (b.onclick = () => quickUpload(deal.id, b.dataset.tileupload)));
   document.querySelectorAll('[data-preview]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); docPreview(Number(a.dataset.preview)); }));
+  document.querySelectorAll('[data-paypaid]').forEach((b) => (b.onclick = () => markPaidModal(b.dataset.paypaid)));
+  document.querySelectorAll('[data-payplan]').forEach((b) => (b.onclick = () => planPayModal(b.dataset.payplan)));
   document.querySelectorAll('[data-docdel]').forEach((b) => (b.onclick = () => {
     const id = b.dataset.docdel;
     const close = openModal('Delete file', '<p>Delete this uploaded file? This cannot be undone.</p>',
@@ -1294,7 +1354,7 @@ async function renderReports() {
       <td data-label="Deal"><a href="#" data-open-deal="${d.id}">${esc(d.ref)}</a> — ${esc(d.title)}</td>
       <td class="num" data-label="Received">${money(d.received, d.currency)}</td>
       <td class="num" data-label="Paid">${money(d.paid, d.currency)}</td>
-      <td class="num" data-label="Income">${money(d.income, d.currency)}</td>
+      ${isAdmin() ? `<td class="num" data-label="Income">${money(d.income, d.currency)}</td>` : ''}
       <td class="num" data-label="Delivered">${money(d.delivered, d.currency)}</td>
       <td data-label="Status"><span class="pill ${d.status === 'active' ? 'blue' : 'green'}">${esc(d.status)}</span></td>
     </tr>`).join('');
@@ -1303,8 +1363,11 @@ async function renderReports() {
     <div class="stats">
       <div class="stat"><div class="label">Money in (from clients)</div><div class="value green tnum">${money(t.moneyIn)}</div></div>
       <div class="stat"><div class="label">Money out (to suppliers)</div><div class="value blue tnum">${money(t.moneyOut)}</div></div>
-      <div class="stat"><div class="label">Net cash held now</div><div class="value gold tnum">${money(t.netCashHeld)}</div></div>
-      <div class="stat"><div class="label">Our income kept</div><div class="value tnum">${money(t.incomeKept)}</div><div class="stat-sub">of ${money(t.incomeExpected)} expected</div></div>
+      ${isAdmin() ? `<div class="stat"><div class="label">Net cash held now</div><div class="value gold tnum">${money(t.netCashHeld)}</div></div>`
+        : `<div class="stat"><div class="label">Total delivered</div><div class="value tnum">${money(t.delivered)}</div></div>`}
+      ${isAdmin()
+        ? `<div class="stat"><div class="label">Our income kept</div><div class="value gold tnum">${money(t.incomeKept)}</div><div class="stat-sub">of ${money(t.incomeExpected)} expected</div></div>`
+        : `<div class="stat"><div class="label">Unpaid for delivered goods</div><div class="value tnum">${money(t.totalUnderpaidToDate || 0)}</div></div>`}
     </div>
 
     <div class="rep-grid">
@@ -1315,14 +1378,14 @@ async function renderReports() {
           ${row('Still to pay suppliers', money(t.toPaySupplier), t.toPaySupplier > 0 ? 'amber' : 'green')}
           ${row('Total delivered (goods)', money(t.delivered), 'green')}
           ${r.biggest ? row('Biggest deal', esc(r.biggest.ref) + ' · ' + money(r.biggest.invoiceTotal, r.biggest.currency)) : ''}
-          ${r.topIncome ? row('Most profitable deal', esc(r.topIncome.ref) + ' · ' + money(r.topIncome.income, r.topIncome.currency)) : ''}
+          ${isAdmin() && r.topIncome ? row('Most profitable deal', esc(r.topIncome.ref) + ' · ' + money(r.topIncome.income, r.topIncome.currency)) : ''}
         </div>`)}
       ${card('Money in vs out by month', `<div class="mchart">${monthBars}</div>
         <div class="mlegend"><span class="green">■</span> In &nbsp; <span class="blue">■</span> Out</div>`)}
     </div>
 
     ${card('All deals', `<table class="grid">
-      <thead><tr><th>Deal</th><th class="num">Received</th><th class="num">Paid</th><th class="num">Income</th><th class="num">Delivered</th><th>Status</th></tr></thead>
+      <thead><tr><th>Deal</th><th class="num">Received</th><th class="num">Paid</th>${isAdmin() ? '<th class="num">Income</th>' : ''}<th class="num">Delivered</th><th>Status</th></tr></thead>
       <tbody>${dealRows || '<tr><td colspan="6" class="muted small">No deals yet.</td></tr>'}</tbody></table>`)}
   `);
   document.querySelectorAll('[data-open-deal]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); go('deal', { id: Number(a.dataset.openDeal) }); }));
