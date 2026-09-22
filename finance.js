@@ -153,21 +153,30 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
   // Deliveries never affect money owed or paid.
   // =====================================================================
   const markupRatio = proformaTotal > 0 ? invoiceTotal / proformaTotal : 1;
-  const deliveredProforma = round2(si.reduce((a, b) => a + (Number(b.proforma_allocated) || 0), 0));
+  // Each delivery invoice states the PROFORMA value delivered. Older entries that
+  // only stored a client-side value are converted back to proforma terms.
+  const proformaOf = (b) => {
+    const pv = Number(b.proforma_allocated) || 0;
+    if (pv > 0) return pv;
+    const cv = Number(b.customer_sales_value) || 0;
+    return cv > 0 ? cv / (markupRatio || 1) : 0;
+  };
+  const deliveredProforma = round2(si.reduce((a, b) => a + proformaOf(b), 0));
   const deliveredClient = round2(
     si.reduce((a, b) => {
       const cv = Number(b.customer_sales_value) || 0;
-      if (cv > 0) return a + cv;
-      return a + (Number(b.proforma_allocated) || 0) * markupRatio;
+      return a + (cv > 0 ? cv : proformaOf(b) * markupRatio);
     }, 0)
   );
-  const deliveredValue = deliveredClient;
+  // The goods pool is the proforma: "out of 50,000 they were supposed to
+  // deliver, they have delivered 12,000".
+  const deliveredValue = deliveredProforma;
   const deliveryCount = si.length;
-  const deliveryTarget = invoiceTotal;
-  const deliveryPct = deliveryTarget > 0 ? round2((deliveredClient / deliveryTarget) * 100) : 0;
-  const deliveryOutstanding = round2(Math.max(0, deliveryTarget - deliveredClient));
-  const overDelivery = round2(Math.max(0, deliveredClient - deliveryTarget));
-  const proformaRemaining = round2(Math.max(0, proformaTotal - deliveredProforma));
+  const deliveryTarget = proformaTotal;
+  const deliveryPct = deliveryTarget > 0 ? round2((deliveredProforma / deliveryTarget) * 100) : 0;
+  const deliveryOutstanding = round2(Math.max(0, deliveryTarget - deliveredProforma));
+  const overDelivery = round2(Math.max(0, deliveredProforma - deliveryTarget));
+  const proformaRemaining = deliveryOutstanding;
 
   // ---- Client settlement view (what the client owes us) ----
   // The client agreed to pay the supplier price plus our markup. Measured

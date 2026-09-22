@@ -623,3 +623,80 @@ h1, h2, h3, h4, .card-h h3, .deal-head h2, .topbar h1, .empty h3, .modal-h h3, .
 .m3 b { font-size: 13.5px; color: var(--navy); font-variant-numeric: tabular-nums; }
 .m3 b.gold { color: var(--gold); }
 .pos-v .pos-pct { font-weight: 600; }
+
+/* ============================================================
+   DEAL DIAGRAM
+   ============================================================ */
+.dg-card { position: relative; overflow: visible; }
+.dg-build { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; margin: 2px 0 16px; }
+.bchip { background: #fff; border: 1px solid #e6dcc6; border-radius: 12px; padding: 9px 16px; font-size: 12.5px;
+  color: var(--muted); text-align: center; cursor: help; line-height: 1.3; }
+.bchip b { display: block; font-size: 17px; color: var(--navy); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.bchip.gold { background: var(--gold-soft); border-color: #eddcae; } .bchip.gold b { color: var(--gold); }
+.bchip.navy { background: #f2f5fa; border-color: #dfe6f0; }
+.bop { font-size: 20px; font-weight: 700; color: var(--gold); }
+
+.dg-svg { width: 100%; height: auto; display: block; overflow: visible; }
+.dg-tall { display: none; max-width: 440px; margin: 0 auto; }
+@media (max-width: 720px) { .dg-wide { display: none; } .dg-tall { display: block; } }
+
+.dg-svg text { font-family: 'Inter', -apple-system, 'Segoe UI', Roboto, sans-serif; }
+.dg-lane { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; fill: var(--gold); }
+.dg-lane.goods { fill: var(--navy-2); }
+.dg-lane-r { font-size: 12.5px; font-weight: 600; fill: var(--muted); }
+.dg-track { fill: #ece6d8; }
+.dg-fill.money { fill: var(--green); }
+.dg-seg.s0 { fill: var(--navy-2); } .dg-seg.s1 { fill: #3d6394; }
+.dg-seg { cursor: help; }
+.dg-seg:hover { fill: var(--gold); }
+
+.dg-node { cursor: help; outline: none; }
+.dg-box { fill: #fff; stroke: #e3d9c3; stroke-width: 1.5; transition: stroke .15s, filter .15s; }
+.dg-green .dg-box { stroke: #bfe0c9; }
+.dg-gold .dg-box { fill: #fffcf3; stroke: #e8d49c; }
+.dg-navy .dg-box { stroke: #cad7e8; }
+.dg-node:hover .dg-box, .dg-node:focus .dg-box { stroke: var(--gold); stroke-width: 2.5; filter: drop-shadow(0 8px 16px rgba(15,39,68,0.14)); }
+.dg-role { font-size: 10.5px; font-weight: 700; letter-spacing: 0.07em; fill: var(--muted); }
+.dg-name { font-family: 'Cormorant Garamond', Georgia, serif !important; font-size: 19px; font-weight: 700; fill: var(--navy); }
+.dg-ico { font-size: 22px; }
+.dg-rule { stroke: #efe7d5; stroke-width: 1; }
+.dg-k { font-size: 12.5px; fill: var(--muted); }
+.dg-v { font-size: 14px; font-weight: 700; fill: var(--navy); font-variant-numeric: tabular-nums; }
+.dg-v.green { fill: var(--green); } .dg-v.amber { fill: var(--amber); } .dg-v.gold { fill: var(--gold); } .dg-v.navy { fill: var(--navy-2); }
+
+.dg-money { fill: none; stroke: var(--gold); stroke-width: 3.5; stroke-linecap: round; }
+.dg-ah-money { fill: var(--gold); }
+.dg-goods { fill: none; stroke: var(--navy-2); stroke-width: 3; stroke-dasharray: 9 7; stroke-linecap: round; stroke-linejoin: round;
+  animation: dg-march 1.4s linear infinite; }
+.dg-ah-goods { fill: var(--navy-2); }
+@keyframes dg-march { to { stroke-dashoffset: -32; } }
+@media (prefers-reduced-motion: reduce) { .dg-goods { animation: none; } }
+.dg-flow { cursor: help; outline: none; }
+.dg-hit { fill: transparent; }
+.dg-flow:hover .dg-money, .dg-flow:focus .dg-money { stroke-width: 5; }
+.dg-flow:hover .dg-goods, .dg-flow:focus .dg-goods { stroke-width: 4.5; }
+.dg-flabel { font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; fill: var(--gold); }
+.dg-flabel.goods { fill: var(--navy-2); }
+.dg-famt { font-size: 15px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.dg-famt.green { fill: var(--green); } .dg-famt.navy, .dg-famt.goods { fill: var(--navy-2); }
+.dg-fsub { font-size: 11px; fill: var(--muted); }
+.dg-pool { cursor: help; outline: none; }
+.dg-svg [tabindex]:focus-visible { outline: none; }
+.dg-svg g:focus-visible .dg-box, .dg-svg rect:focus-visible { stroke: var(--gold); stroke-width: 3; }
+
+.dg-legend { display: flex; gap: 22px; flex-wrap: wrap; justify-content: center; margin-top: 12px; font-size: 12.5px; color: var(--muted); }
+.dg-legend .lg { display: inline-block; width: 22px; height: 0; vertical-align: middle; margin-right: 6px; }
+.lg.money { border-top: 3.5px solid var(--gold); }
+.lg.goods { border-top: 3px dashed var(--navy-2); }
+
+.dg-tip { position: fixed; z-index: 300; max-width: 320px; background: var(--navy); color: #f3ead3;
+  font-size: 13px; line-height: 1.5; padding: 11px 14px; border-radius: 10px; white-space: pre-line;
+  box-shadow: 0 14px 34px rgba(0,0,0,0.3); border: 1px solid rgba(201,164,65,0.45);
+  opacity: 0; visibility: hidden; transition: opacity .12s; pointer-events: none; }
+.dg-tip.on { opacity: 1; visibility: visible; }
+.dl-big { font-size: 26px; font-weight: 750; letter-spacing: -0.02em; color: var(--navy-2); font-variant-numeric: tabular-nums; }
+.progress.goods > span { background: var(--navy-2); }
+.dg-badge.b-green { fill: #e8f6ec; stroke: #bfe0c9; }
+.dg-badge.b-navy { fill: #eaf0f8; stroke: #cad7e8; }
+.b-green ~ .dg-glyph, .dg-glyph { fill: none; stroke: var(--navy-2); stroke-width: 1.7; stroke-linejoin: round; }
+.dg-glyph-line { fill: none; stroke: var(--navy-2); stroke-width: 1.7; stroke-linecap: round; }

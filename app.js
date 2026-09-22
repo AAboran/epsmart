@@ -237,7 +237,7 @@ function dealCard(d) {
             ${c.supplierOpenToPay > 0.005 ? `<div class="meta">open to be paid ${money(c.supplierOpenToPay, cur)}</div>` : `<div class="meta green">nothing open</div>`}
           </div>
           <div class="dc-bar">
-            <div class="dc-bar-top"><span>Delivered <span class="tag" style="margin-left:4px">tracking</span></span><b class="gold">${pct(c.deliveryPct)}</b></div>
+            <div class="dc-bar-top"><span>Goods delivered <span class="tag" style="margin-left:4px">of proforma</span></span><b class="gold">${pct(c.deliveryPct)}</b></div>
             <div class="progress ${c.overDelivery > 0 ? 'over' : ''}"><span style="width:${Math.min(100, c.deliveryPct)}%"></span></div>
             <div class="meta">${money(c.deliveredValue, cur)} of ${money(c.deliveryTarget, cur)}</div>
           </div>
@@ -392,127 +392,42 @@ async function renderDeal() {
   const incPct = c.incomeExpectedTotal > 0 ? Math.min(100, c.incomeKept / c.incomeExpectedTotal * 100) : 0;
 
   shell(deal.ref, `
-    ${roBanner}${pendBanner}${fundBanner}
+    ${roBanner}${pendBanner}${isAdmin() ? fundBanner : ''}
     <div class="deal-head">
       <h2>${esc(deal.title)}</h2>
       <span class="pill ${deal.status === 'active' ? 'blue' : deal.status === 'completed' ? 'green' : 'gray'}">${esc(deal.status)}</span>
     </div>
-    <div class="parties muted" style="margin-bottom:6px">${esc(deal.customer_name)} &nbsp;→&nbsp; ${esc(deal.supplier_name)}</div>
-    <div class="derive-line">
-      ${isAdmin() ? `
-        <span class="dl-chip">Supplier proforma <b>${money(deal.proforma_total, cur)}</b></span>
-        <span class="dl-plus">+ ${c.marginPct ? c.marginPct.toFixed(2).replace(/\.00$/, '') : 4}%</span>
-        <span class="dl-chip">Our invoice to client <b>${money(deal.invoice_total, cur)}</b></span>
-        <span class="dl-eq">=</span>
-        <span class="dl-chip gold">Our income <b>${money(c.dealMargin, cur)}</b></span>
-      ` : `
-        <span class="dl-chip">Agreed order value <b>${money(deal.invoice_total, cur)}</b></span>
-        <span class="dl-eq">·</span>
-        <span class="dl-chip">Delivered <b>${money(c.deliveredClient, cur)}</b></span>
-        <span class="dl-eq">·</span>
-        <span class="dl-chip">Received <b>${money(c.totalReceived, cur)}</b></span>
-      `}
-    </div>
+    <div class="parties muted" style="margin-bottom:8px">${esc(deal.customer_name)} &nbsp;·&nbsp; ${esc(deal.supplier_name)}</div>
     ${!ro ? `<div class="nextline"><span class="nextline-k">Next:</span> ${esc(na.label)}</div>` : ''}
 
-    <!-- MONEY PICTURE: Client -> Us -> Supplier -->
-    <div class="flow">
-      <div class="flow-node">
-        <div class="flow-role">Client</div>
-        <div class="flow-name">${esc(deal.customer_name)}</div>
-        <div class="flow-big green">${money(c.totalReceived, cur)}</div>
-        <div class="flow-sub">received of ${money(deal.invoice_total, cur)} invoiced</div>
-        <div class="progress"><span style="width:${recvPct}%"></span></div>
-        ${c.customerBalance > 0.005 ? `<div class="flow-tag amber">Still to collect ${money(c.customerBalance, cur)}</div>` : `<div class="flow-tag green">Fully collected</div>`}
-      </div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-node europa">
-        <div class="flow-role">Europa · us</div>
-        ${isAdmin() ? `
-          <div class="flow-name">Our income ${info('Our income on this deal is the markup: invoice less supplier proforma. It builds up as the client pays. Cash held now also contains the supplier\'s share, which still goes out.')}</div>
-          <div class="flow-big gold">${money(c.incomeKept, cur)}</div>
-          <div class="flow-sub">earned of ${money(c.feeTotal, cur)} total</div>
-          <div class="progress gold"><span style="width:${incPct}%"></span></div>
-          <div class="mini3">
-            <div class="m3"><span>Cash held now</span><b>${money(c.heldInHouse, cur)}</b></div>
-            <div class="m3"><span>Income earned</span><b class="gold">${money(c.incomeKept, cur)}</b></div>
-            <div class="m3"><span>Income still to come</span><b>${money(c.incomeRemaining, cur)}</b></div>
-          </div>
-          ${c.companyMoneyFronted > 0.005 ? `<div class="flow-tag red">Fronted ${money(c.companyMoneyFronted, cur)}</div>` : ''}
-        ` : `
-          <div class="flow-name">Agreed 4% fee ${info('Your invoice includes our agreed 4% fee, currently ' + money(c.feeTotal, cur) + ' in total. Each payment you make covers a proportional share of it. So far ' + money(c.feePaid, cur) + ' of the fee has been covered and ' + money(c.feeRemaining, cur) + ' is still outstanding.')}</div>
-          <div class="flow-big gold">${money(c.feePaid, cur)}</div>
-          <div class="flow-sub">of ${money(c.feeTotal, cur)} fee paid</div>
-          <div class="progress gold"><span style="width:${Math.min(100, c.feePct || 0)}%"></span></div>
-          <div class="flow-tag ${c.feeRemaining > 0.005 ? 'amber' : 'green'}">${c.feeRemaining > 0.005 ? 'Fee remaining ' + money(c.feeRemaining, cur) : 'Fee fully paid'}</div>
-        `}
-      </div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-node">
-        <div class="flow-role">Supplier</div>
-        <div class="flow-name">${esc(deal.supplier_name)}</div>
-        <div class="flow-big blue">${money(paidToSupplier, cur)}</div>
-        ${isAdmin() ? `
-          <div class="flow-sub">paid of ${money(supplierOwed, cur)} owed</div>
-          <div class="progress blue"><span style="width:${paidPct}%"></span></div>
-          ${c.supplierOpenToPay > 0.005 ? `<div class="flow-tag amber">Open to be paid ${money(c.supplierOpenToPay, cur)}</div>` : `<div class="flow-tag green">Nothing open</div>`}
-        ` : `<div class="flow-sub">paid out to the supplier so far</div>`}
-      </div>
-    </div>
-
-    <!-- OUR POSITION: received vs expected, and in-house vs income -->
-    ${(() => {
-      const held = c.totalReceived - paidToSupplier;
-      const diff = held - c.incomeKept;
-      const diffPos = diff >= -0.005;
-      const recPct = deal.invoice_total > 0 ? Math.round(c.totalReceived / deal.invoice_total * 100) : 0;
-      return `<div class="position">
-        <div class="pos-group">
-          <div class="pos-item"><div class="pos-k">${isAdmin() ? 'Expected to receive' : 'Order value'}</div><div class="pos-v">${money(deal.invoice_total, cur)}</div></div>
-          <div class="pos-item"><div class="pos-k">${isAdmin() ? 'Received so far' : 'Paid by you so far'}</div><div class="pos-v green">${money(c.totalReceived, cur)} <span class="pos-pct">${recPct}%</span></div></div>
-          <div class="pos-item"><div class="pos-k">${isAdmin() ? 'Still expecting to collect' : 'Still to pay'}</div><div class="pos-v ${c.customerBalance > 0.005 ? 'amber' : 'green'}">${money(c.customerBalance, cur)}</div></div>
-        </div>
-        <div class="pos-divider"></div>
-        <div class="pos-group">
-          ${isAdmin() ? `
-          <div class="pos-item"><div class="pos-k">Cash held now ${info('Money currently with us for this deal: ' + money(c.totalReceived, cur) + ' received from the client less ' + money(paidToSupplier, cur) + ' already paid out to the supplier. Part of this is still the supplier\'s and will go out; what stays is our income.')}</div><div class="pos-v">${money(held, cur)}</div></div>
-          <div class="pos-item"><div class="pos-k">Our income earned ${info('Our total income on this deal is ' + money(c.feeTotal, cur) + ' (our invoice ' + money(deal.invoice_total, cur) + ' less the supplier proforma ' + money(deal.proforma_total, cur) + '). This is the part already earned, which grows as the client pays.')}</div><div class="pos-v gold">${money(c.incomeKept, cur)}<span class="pos-pct"> of ${money(c.feeTotal, cur)}</span></div></div>
-          <div class="pos-item"><div class="pos-k">Income still to come ${info('The rest of our income on this deal, still to be earned as the remaining payments arrive.')}</div><div class="pos-v ${c.incomeRemaining > 0.005 ? 'amber' : 'green'}">${money(c.incomeRemaining, cur)}</div></div>
-          ` : `
-          <div class="pos-item"><div class="pos-k">Agreed 4% fee (total)</div><div class="pos-v">${money(c.feeTotal, cur)}</div></div>
-          <div class="pos-item"><div class="pos-k">Fee paid so far ${info('Your invoice includes our agreed 4% fee. Every payment you make covers a proportional share of it, so this is how much of the fee your payments have already covered.')}</div><div class="pos-v gold">${money(c.feePaid, cur)}</div></div>
-          <div class="pos-item"><div class="pos-k">Fee remaining</div><div class="pos-v ${c.feeRemaining > 0.005 ? 'amber' : 'green'}">${money(c.feeRemaining, cur)}</div></div>
-          `}
-        </div>
-      </div>`;
-    })()}
+    <!-- THE DEAL AT A GLANCE: live diagram of both flows -->
+    ${dealDiagram(d)}
 
     ${!ro && canWrite() ? `
     <div class="quick-actions">
-      ${isAdmin() ? `<button class="btn primary big-btn" id="q-received">＋&nbsp; Money received from client</button>
-      <button class="btn big-btn" id="q-paid">＋&nbsp; Money paid to supplier</button>` : ''}
+      ${isAdmin() ? `<button class="btn primary big-btn" id="q-received">＋&nbsp; Money in from client</button>
+      <button class="btn big-btn" id="q-paid">＋&nbsp; Money out to supplier</button>` : ''}
       <button class="btn ${isAdmin() ? '' : 'primary'} big-btn" id="q-delivery">＋&nbsp; Add a delivery</button>
     </div>
-    ${isOffice() ? `<div class="meta" style="margin-top:8px">Financial entries are made by an administrator. Deliveries you add are sent for approval.</div>` : ''}` : ''}
+    ${isOffice() ? `<div class="meta" style="margin-top:8px">Payments are entered by Europa. Deliveries you add are sent for approval.</div>` : ''}` : ''}
 
-    <!-- PAYMENT JOURNEY: money in and money out, always visible -->
+    <!-- MONEY FLOW: payments in and out -->
     ${paymentsCard(d, cur, ro)}
 
-    <!-- DELIVERY LAYER (separate from money) -->
+    <!-- GOODS FLOW: deliveries against the proforma -->
     ${deliveryCard(d, cur)}
 
-    <!-- 3 DOCUMENT TILES -->
+    <!-- DOCUMENTS -->
     <div class="section-title" style="margin:24px 0 12px">Documents — tap a tile to upload</div>
     <div class="tiles">
-      ${uploadTile(d, 'Invoice to client', 'Customer invoices', '🧾', ro)}
-      ${uploadTile(d, 'Main supplier invoice', 'Supplier commercial invoices', '📄', ro)}
+      ${uploadTile(d, 'Supplier proforma', 'Supplier proformas', '📄', ro)}
+      ${uploadTile(d, 'Our invoice to client', 'Customer invoices', '🧾', ro)}
       ${uploadTile(d, 'Delivery invoices', 'Delivery notes', '🚚', ro)}
     </div>
 
     <!-- OPTIONAL FULL DETAIL -->
     <button class="collapse-h details-main" id="details-toggle" style="margin-top:26px"><span class="chev">▶</span> Show full details &amp; history</button>
     <div id="details-body" class="hidden" style="margin-top:14px">
-      ${sectionCustomerPrepay(c, cur, ro)}
       ${sectionCloseout(c, cur, deal)}
       ${sectionDocuments(d, cur)}
       ${sectionAudit()}
@@ -520,6 +435,7 @@ async function renderDeal() {
   `, actions);
 
   wireDeal(d);
+  wireDiagram();
 }
 
 /* Upload tile: whole tile is one click to add a file; shows attached files. */
@@ -613,21 +529,20 @@ function custRow(p, cur, d) {
 /* ---- deliveries list (used inside the delivery card) ---- */
 function deliveriesTable(d, cur) {
   const invs = d.supplierInvoices.filter((i) => i.status !== 'void');
-  if (!invs.length) return `<div class="empty small">No deliveries recorded yet.</div>`;
+  if (!invs.length) return `<div class="empty small">No deliveries yet. The supplier ships in batches as goods are produced.</div>`;
   return `
     <table class="grid">
-      <thead><tr><th>Delivery / invoice #</th><th>Date</th><th class="num">Proforma value</th><th class="num">Client value</th><th>Payment</th><th></th></tr></thead>
+      <thead><tr><th>Delivery invoice</th><th>Date</th><th class="num">Proforma value delivered</th><th>Qty</th><th></th></tr></thead>
       <tbody>
       ${invs.map((i) => {
         const proof = docFor(d, 'supplier_invoice', i.id);
         return `<tr>
-          <td data-label="Delivery #">${esc(i.invoice_number)} ${i.status === 'pending' ? '<span class="pill amber">pending</span>' : ''} ${proof ? '<span class="pill green">file</span>' : ''}</td>
+          <td data-label="Delivery invoice">${esc(i.invoice_number)} ${i.status === 'pending' ? '<span class="pill amber">awaiting approval</span>' : ''}
+            ${proof ? `<a href="#" data-preview="${proof.id}" class="pill green">view file</a>` : ''}</td>
           <td data-label="Date">${fdate(i.delivery_date || i.issue_date)}</td>
-          <td class="num" data-label="Proforma value">${money(i.proforma_allocated, cur)}</td>
-          <td class="num" data-label="Client value">${money(i.customer_sales_value, cur)}</td>
-          <td data-label="Payment">${payCell(i)}</td>
+          <td class="num" data-label="Proforma value">${money(i.proforma_allocated || 0, cur)}</td>
+          <td data-label="Qty">${esc(i.quantity || '—')}</td>
           <td class="num" data-label="">
-            ${canWrite() && i.status !== 'void' ? `<button class="btn sm" data-upload='${uploadAttr('supplier_invoice', i.id)}'>File</button>` : ''}
             ${isAdmin() && i.status === 'posted' ? `<button class="btn sm danger" data-void='supplier_invoice:${i.id}'>Void</button>` : ''}
           </td>
         </tr>`;
@@ -637,66 +552,278 @@ function deliveriesTable(d, cur) {
 }
 function sectionSupplierInvoices() { return ''; /* deliveries now shown in their own card */ }
 
-/* Payment marker for a delivery: paid (with date) or a planned payment date. */
-function payCell(i) {
-  const paid = i.pay_status === 'paid';
-  const canEdit = canWrite() && i.status !== 'void';
-  if (paid) {
-    return `<span class="pill green">Paid ${fdate(i.paid_date)}</span>` +
-      (canEdit ? ` <button class="btn sm" data-payplan="${i.id}">Change</button>` : '');
-  }
-  const planned = i.planned_pay_date
-    ? `<span class="pill amber">Plan: ${fdate(i.planned_pay_date)}</span>`
-    : `<span class="pill gray">Not paid</span>`;
-  if (!canEdit) return planned;
-  return `${planned} <button class="btn sm" data-paypaid="${i.id}">Mark paid</button> <button class="btn sm" data-payplan="${i.id}">${i.planned_pay_date ? 'Change date' : 'Set date'}</button>`;
-}
+/* =====================================================================
+   DEAL DIAGRAM — live picture of the two independent flows on one deal.
+     Money (top):  Client ──pays──▶ Europa ──pays──▶ Supplier
+     Goods (bottom): Supplier ──ships in batches──▶ Client  (no money effect)
+   Every box, arrow and bar carries a data-dtip explanation shown on hover/tap.
+   ===================================================================== */
+function dealDiagram(d) {
+  const deal = d.deal, c = d.computed, cur = deal.currency, admin = isAdmin();
+  const m = (v) => money(v, cur);
+  const posted = (arr) => (arr || []).filter((x) => x.status === 'posted');
+  const ins = posted(d.customerPayments), outs = posted(d.supplierPayments), dels = posted(d.supplierInvoices);
+  const paidOut = outs.reduce((a, p) => a + Number(p.amount || 0), 0);
+  const invoice = Number(deal.invoice_total) || 0;
+  const proforma = Number(deal.proforma_total) || 0;
+  const fee = c.feeTotal || 0;
+  const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
+  const listTip = (rows, fmt) => rows.slice(-5).map(fmt).join('\n') + (rows.length > 5 ? `\n… and ${rows.length - 5} earlier` : '');
 
-function markPaidModal(id) {
-  const body = `<div class="field"><label>Date paid</label><input id="mp_date" type="date" value="${today()}" /></div>
-    <div id="mp_err" class="alert err hidden"></div>`;
-  const close = openModal('Mark delivery as paid', body, `<button class="btn" id="mp_no">Cancel</button><button class="btn primary" id="mp_yes">Mark paid</button>`);
-  document.getElementById('mp_no').onclick = close;
-  document.getElementById('mp_yes').onclick = async () => {
-    try { await api('/deliveries/' + id + '/payment', { method: 'PATCH', body: { status: 'paid', date: v('mp_date') } }); close(); ok('Marked as paid.'); renderDeal(); }
-    catch (e) { showErr('mp_err', e.message); }
+  const F = {
+    moneyPct: invoice > 0 ? Math.min(100, (c.totalReceived / invoice) * 100) : 0,
+    goodsPct: Math.min(100, c.deliveryPct || 0),
+    invoice, proforma, fee, paidOut, m,
+    delivered: c.deliveredValue || 0, remaining: c.deliveryOutstanding || 0, dels,
+    inCount: plural(ins.length, 'payment'), outCount: plural(outs.length, 'payment'),
+    delCount: plural(dels.length, 'delivery').replace('deliverys', 'deliveries'),
+    inAmt: m(c.totalReceived), outAmt: m(paidOut),
+    tipIn: ins.length
+      ? `Payments in from ${deal.customer_name}: ${m(c.totalReceived)}\n` + listTip(ins, (p) => `${fdate(p.date)}  ${m(p.amount_received)}`)
+      : `No payments received from ${deal.customer_name} yet.`,
+    tipOut: outs.length
+      ? `Payments out to ${deal.supplier_name}: ${m(paidOut)}\n` + listTip(outs, (p) => `${fdate(p.date)}  ${m(p.amount)}`)
+      : `Nothing paid to ${deal.supplier_name} yet.`,
+    tipGoods: dels.length
+      ? `Goods shipped directly from ${deal.supplier_name} to ${deal.customer_name}.\n` + listTip(dels, (x) => `${x.invoice_number} · ${fdate(x.delivery_date || x.issue_date)} · ${m(x.proforma_allocated || 0)}`)
+      : `No deliveries yet. The supplier ships in batches as goods are produced.`,
+    tipMoneyPool: `Deal pool = our invoice ${m(invoice)}` + (admin ? `\n= supplier proforma ${m(proforma)} + our income ${m(fee)}` : `\n(includes the agreed 4% fee of ${m(fee)})`) +
+      `\nPaid in so far ${m(c.totalReceived)} · still to pay ${m(c.customerBalance)}`,
+    tipGoodsPool: `Proforma pool ${m(proforma)} — the goods the supplier committed to deliver.\nDelivered ${m(c.deliveredValue)} · still to deliver ${m(c.deliveryOutstanding)}.\nDeliveries never change any payment.`,
   };
-}
-function planPayModal(id) {
-  const body = `<p class="small muted">Not paid yet? Record when you plan to pay this delivery.</p>
-    <div class="field"><label>Planned payment date</label><input id="pp_date" type="date" value="${today()}" /></div>
-    <div id="pp_err" class="alert err hidden"></div>`;
-  const close = openModal('Planned payment date', body, `<button class="btn" id="pp_no">Cancel</button><button class="btn primary" id="pp_yes">Save date</button>`);
-  document.getElementById('pp_no').onclick = close;
-  document.getElementById('pp_yes').onclick = async () => {
-    try { await api('/deliveries/' + id + '/payment', { method: 'PATCH', body: { status: 'unpaid', date: v('pp_date') } }); close(); ok('Planned date saved.'); renderDeal(); }
-    catch (e) { showErr('pp_err', e.message); }
-  };
-}
 
-/* ---- Section 5: supplier payments ---- */
-function sectionSupplierPayments(d, cur, ro) {
-  const c = d.computed;
-  const pays = d.supplierPayments.filter((p) => p.status !== 'void');
-  const rows = pays.length ? pays.map((p) => `
-    <tr>
-      <td data-label="Date">${fdate(p.date)} ${p.status === 'pending' ? '<span class="pill amber">pending</span>' : ''}</td>
-      <td class="num" data-label="Amount">${money(p.amount, cur)}</td>
-      <td data-label="Ref">${esc(p.bank_ref || '—')}</td>
-      <td class="num" data-label="">
-        ${canWrite() && p.status !== 'void' ? `<button class="btn sm" data-upload='${uploadAttr('supplier_payment', p.id)}'>Proof</button>` : ''}
-        ${isAdmin() && p.status === 'posted' ? `<button class="btn sm danger" data-void='supplier_payment:${p.id}'>Void</button>` : ''}
-      </td>
-    </tr>`).join('') : `<tr><td colspan="4" class="muted small">No payments to the supplier yet.</td></tr>`;
-  const head = `<div class="rowset" style="margin-bottom:12px">
-      ${row('Owed to supplier (proforma)', money(c.supplierOwed, cur))}
-      ${row('Paid so far', money(c.totalPaidToSupplier, cur), 'green')}
-      ${row('Open to be paid', money(c.supplierOpenToPay, cur), c.supplierOpenToPay > 0 ? 'amber' : 'green')}
-      ${c.supplierOverpaid > 0 ? row('Overpaid', money(c.supplierOverpaid, cur), 'red') : ''}
+  const nodes = {
+    client: {
+      role: 'Client · pays us', name: deal.customer_name, icon: '🏢', accent: 'green',
+      tip: `${deal.customer_name}\nInvoiced ${m(invoice)} (supplier proforma + our 4%).\nPaid so far ${m(c.totalReceived)} in ${F.inCount}.\nStill to pay ${m(c.customerBalance)}.`,
+      lines: [['Invoiced', m(invoice), ''], ['Paid', m(c.totalReceived), 'green'],
+        ['Still to pay', m(c.customerBalance), c.customerBalance > 0.005 ? 'amber' : 'green']],
+    },
+    europa: admin ? {
+      role: 'Europa · us', name: 'Europa Pharmaceutical', logo: true, accent: 'gold',
+      tip: `Cash held now ${m(c.heldInHouse)} = received ${m(c.totalReceived)} − paid out ${m(paidOut)}.\nOur income on this deal ${m(fee)}: ${m(c.incomeKept)} earned, ${m(c.incomeRemaining)} still to come.`,
+      lines: [['Cash held now', m(c.heldInHouse), ''], ['Income earned', m(c.incomeKept), 'gold'],
+        ['Income to come', m(c.incomeRemaining), c.incomeRemaining > 0.005 ? 'amber' : 'green']],
+    } : {
+      role: 'Europa · 4% fee', name: 'Europa Pharmaceutical', logo: true, accent: 'gold',
+      tip: `Your invoice includes our agreed 4% fee of ${m(fee)}.\nEvery payment covers a proportional share of it: ${m(c.feePaid)} covered so far, ${m(c.feeRemaining)} remaining.`,
+      lines: [['4% fee total', m(fee), ''], ['Fee paid', m(c.feePaid), 'gold'],
+        ['Fee remaining', m(c.feeRemaining), c.feeRemaining > 0.005 ? 'amber' : 'green']],
+    },
+    supplier: {
+      role: 'Supplier · paid by us', name: deal.supplier_name, icon: '🏭', accent: 'navy',
+      tip: `${deal.supplier_name}\nProforma ${m(proforma)} sets the deal.\nPaid so far ${m(paidOut)} in ${F.outCount}.\nDelivered ${m(c.deliveredValue)} of the proforma in ${F.delCount}.`,
+      lines: admin
+        ? [['Proforma', m(proforma), ''], ['Paid', m(paidOut), 'navy'],
+          ['Open to pay', m(c.supplierOpenToPay), c.supplierOpenToPay > 0.005 ? 'amber' : 'green']]
+        : [['Proforma', m(proforma), ''], ['Paid', m(paidOut), 'navy'], ['Delivered', m(c.deliveredValue), 'green']],
+    },
+  };
+
+  // How the deal is built — the proforma is the starting point.
+  const build = admin
+    ? `<div class="dg-build">
+        <span class="bchip" data-dtip="${esc('The supplier proforma sets the scope of the deal: ' + m(proforma) + '.')}">Supplier proforma <b>${m(proforma)}</b></span>
+        <span class="bop">+</span>
+        <span class="bchip gold" data-dtip="${esc('Our markup on top of the proforma (' + (c.marginPct || 0) + '%). This is our income on the deal.')}">Our income <b>${m(fee)}</b></span>
+        <span class="bop">=</span>
+        <span class="bchip navy" data-dtip="${esc('What we invoice the client: the proforma plus our income.')}">Invoice to client <b>${m(invoice)}</b></span>
+      </div>`
+    : `<div class="dg-build">
+        <span class="bchip navy" data-dtip="${esc('Your order value, as invoiced by Europa.')}">Order value <b>${m(invoice)}</b></span>
+        <span class="bop">=</span>
+        <span class="bchip" data-dtip="${esc('The supplier proforma — the goods to be produced and delivered.')}">Supplier proforma <b>${m(proforma)}</b></span>
+        <span class="bop">+</span>
+        <span class="bchip gold" data-dtip="${esc('The agreed 4% fee included in your invoice.')}">Agreed 4% fee <b>${m(fee)}</b></span>
+      </div>`;
+
+  return `
+    <div class="card dg-card">
+      <div class="card-h"><h3>Deal at a glance</h3><div style="flex:1"></div><span class="meta">Hover or tap any box, arrow or bar for details</span></div>
+      <div class="card-b">
+        ${build}
+        ${dgSvgWide(nodes, F)}
+        ${dgSvgTall(nodes, F)}
+        <div class="dg-legend">
+          <span><i class="lg money"></i> Money flow — payments in and out</span>
+          <span><i class="lg goods"></i> Goods flow — deliveries, no effect on money</span>
+        </div>
+      </div>
+      <div class="dg-tip" id="dg-tip" role="tooltip"></div>
     </div>`;
-  const table = `<table class="grid"><thead><tr><th>Date</th><th class="num">Amount</th><th>Ref</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
-  const addBtn = !ro && canWrite() ? `<button class="btn sm primary" data-next="add-supp-pay">Record payment to supplier</button>` : '';
-  return card('Payments to supplier', head + table, addBtn);
+}
+
+/* ---- diagram drawing helpers ---- */
+function dgDefs(id) {
+  return `<defs>
+    <marker id="${id}-am" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="dg-ah-money"/></marker>
+    <marker id="${id}-ag" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="dg-ah-goods"/></marker>
+  </defs>`;
+}
+function dgIcon(kind, x, y) {
+  // Small drawn badges so icons render identically on every system.
+  const g = (inner, cls) => `<g transform="translate(${x},${y})"><rect width="30" height="30" rx="8" class="dg-badge ${cls}"/>${inner}</g>`;
+  if (kind === 'client') return g('<rect x="7" y="11" width="16" height="11" rx="2" class="dg-glyph"/><path d="M12 11V9.2a1.4 1.4 0 0 1 1.4-1.4h3.2A1.4 1.4 0 0 1 18 9.2V11" class="dg-glyph-line"/><path d="M7 15.5h16" class="dg-glyph-line"/>', 'b-green');
+  return g('<path d="M6 23V13l5 3v-3l5 3V8h3.2l1.3 15z" class="dg-glyph"/>', 'b-navy');
+}
+function dgNode(n, x, y, w, h) {
+  // Fit the company name to the box: shrink the font first, truncate only if very long.
+  const avail = w - 16 - 54;
+  const maxChars = Math.floor(avail / (14 * 0.55));
+  const nm = n.name.length > maxChars ? n.name.slice(0, maxChars - 1) + '…' : n.name;
+  const fs = Math.max(14, Math.min(19, avail / (Math.max(1, nm.length) * 0.55)));
+  const badge = n.logo
+    ? `<image href="/img/europa-icon.png" x="${x + w - 46}" y="${y + 14}" width="30" height="30"/>`
+    : dgIcon(n.accent === 'green' ? 'client' : 'supplier', x + w - 46, y + 14);
+  const lines = n.lines.map((l, i) => {
+    const ly = y + 94 + i * 27;
+    return `<text x="${x + 16}" y="${ly}" class="dg-k">${esc(l[0])}</text>` +
+      `<text x="${x + w - 16}" y="${ly}" text-anchor="end" class="dg-v ${l[2]}">${esc(l[1])}</text>`;
+  }).join('');
+  return `<g class="dg-node dg-${n.accent}" tabindex="0" data-dtip="${esc(n.tip)}">
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="16" class="dg-box"/>
+    <text x="${x + 16}" y="${y + 30}" class="dg-role">${esc(n.role.toUpperCase())}</text>
+    <text x="${x + 16}" y="${y + 55}" class="dg-name" style="font-size:${fs.toFixed(1)}px">${esc(nm)}</text>
+    ${badge}
+    <line x1="${x + 16}" y1="${y + 70}" x2="${x + w - 16}" y2="${y + 70}" class="dg-rule"/>
+    ${lines}
+  </g>`;
+}
+function dgPool(id, x, y, w, h, pct, cls, tip) {
+  const fw = Math.max(0, Math.min(w, (w * pct) / 100));
+  return `<g tabindex="0" data-dtip="${esc(tip)}" class="dg-pool">
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${h / 2}" class="dg-track"/>
+    ${fw > 0 ? `<rect x="${x}" y="${y}" width="${fw}" height="${h}" rx="${h / 2}" class="dg-fill ${cls}"/>` : ''}
+  </g>`;
+}
+/* goods pool: one segment per delivery, each with its own tooltip */
+function dgGoodsPool(id, x, y, w, h, F) {
+  const total = F.proforma || 1;
+  let cx = x;
+  const segs = F.dels.map((dl, i) => {
+    const val = Number(dl.proforma_allocated) || 0;
+    const sw = Math.max(0, Math.min(x + w - cx, (w * val) / total));
+    const seg = sw > 0 ? `<rect x="${cx}" y="${y}" width="${sw}" height="${h}" class="dg-seg s${i % 2}"
+        tabindex="0" data-dtip="${esc(`Delivery ${dl.invoice_number}\n${fdate(dl.delivery_date || dl.issue_date)} · ${F.m(val)} (proforma value)`)}"/>` : '';
+    cx += sw;
+    return seg;
+  }).join('');
+  return `<defs><clipPath id="${id}-gc"><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${h / 2}"/></clipPath></defs>
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${h / 2}" class="dg-track" tabindex="0" data-dtip="${esc(F.tipGoodsPool)}"/>
+    <g clip-path="url(#${id}-gc)">${segs}</g>`;
+}
+
+function dgSvgWide(N, F) {
+  const id = 'dgw';
+  return `<svg class="dg-svg dg-wide" viewBox="0 0 1000 468" role="img" aria-label="Deal diagram: money and goods flows">
+    ${dgDefs(id)}
+    <text x="20" y="22" class="dg-lane">MONEY FLOW</text>
+    <text x="980" y="22" text-anchor="end" class="dg-lane-r">Deal pool ${esc(F.m(F.invoice))} · ${Math.round(F.moneyPct)}% paid in</text>
+    ${dgPool(id, 20, 32, 960, 12, F.moneyPct, 'money', F.tipMoneyPool)}
+
+    ${dgNode(N.client, 20, 78, 240, 176)}
+    ${dgNode(N.europa, 380, 78, 240, 176)}
+    ${dgNode(N.supplier, 740, 78, 240, 176)}
+
+    <g tabindex="0" data-dtip="${esc(F.tipIn)}" class="dg-flow">
+      <rect x="262" y="136" width="116" height="84" class="dg-hit"/>
+      <text x="320" y="152" text-anchor="middle" class="dg-flabel">PAID IN</text>
+      <path d="M266,168 H372" class="dg-money" marker-end="url(#${id}-am)"/>
+      <text x="320" y="192" text-anchor="middle" class="dg-famt green">${esc(F.inAmt)}</text>
+      <text x="320" y="210" text-anchor="middle" class="dg-fsub">${esc(F.inCount)}</text>
+    </g>
+    <g tabindex="0" data-dtip="${esc(F.tipOut)}" class="dg-flow">
+      <rect x="622" y="136" width="116" height="84" class="dg-hit"/>
+      <text x="680" y="152" text-anchor="middle" class="dg-flabel">PAID OUT</text>
+      <path d="M626,168 H732" class="dg-money" marker-end="url(#${id}-am)"/>
+      <text x="680" y="192" text-anchor="middle" class="dg-famt navy">${esc(F.outAmt)}</text>
+      <text x="680" y="210" text-anchor="middle" class="dg-fsub">${esc(F.outCount)}</text>
+    </g>
+
+    <g tabindex="0" data-dtip="${esc(F.tipGoods)}" class="dg-flow">
+      <rect x="120" y="258" width="780" height="100" class="dg-hit"/>
+      <path d="M860,258 V328 H140 V262" class="dg-goods" marker-end="url(#${id}-ag)"/>
+      <text x="500" y="318" text-anchor="middle" class="dg-flabel goods">GOODS DELIVERED · ${esc(F.delCount.toUpperCase())}</text>
+      <text x="500" y="352" text-anchor="middle" class="dg-famt goods">${esc(F.m(F.delivered))}</text>
+    </g>
+
+    <text x="20" y="400" class="dg-lane goods">GOODS FLOW · does not affect money</text>
+    <text x="980" y="400" text-anchor="end" class="dg-lane-r">Proforma pool ${esc(F.m(F.proforma))} · ${Math.round(F.goodsPct)}% delivered</text>
+    ${dgGoodsPool(id, 20, 410, 960, 16, F)}
+    <text x="20" y="452" class="dg-k">Delivered ${esc(F.m(F.delivered))}</text>
+    <text x="980" y="452" text-anchor="end" class="dg-k">Still to deliver ${esc(F.m(F.remaining))}</text>
+  </svg>`;
+}
+
+function dgSvgTall(N, F) {
+  const id = 'dgt';
+  return `<svg class="dg-svg dg-tall" viewBox="0 0 400 930" role="img" aria-label="Deal diagram: money and goods flows">
+    ${dgDefs(id)}
+    <text x="20" y="22" class="dg-lane">MONEY FLOW</text>
+    <text x="20" y="42" class="dg-lane-r">Deal pool ${esc(F.m(F.invoice))} · ${Math.round(F.moneyPct)}% paid in</text>
+    ${dgPool(id, 20, 52, 360, 12, F.moneyPct, 'money', F.tipMoneyPool)}
+
+    ${dgNode(N.client, 20, 84, 300, 176)}
+    <g tabindex="0" data-dtip="${esc(F.tipIn)}" class="dg-flow">
+      <rect x="120" y="262" width="200" height="86" class="dg-hit"/>
+      <path d="M150,264 V344" class="dg-money" marker-end="url(#${id}-am)"/>
+      <text x="168" y="290" class="dg-flabel">PAID IN</text>
+      <text x="168" y="314" class="dg-famt green">${esc(F.inAmt)}</text>
+      <text x="168" y="332" class="dg-fsub">${esc(F.inCount)}</text>
+    </g>
+    ${dgNode(N.europa, 20, 350, 300, 176)}
+    <g tabindex="0" data-dtip="${esc(F.tipOut)}" class="dg-flow">
+      <rect x="120" y="528" width="200" height="86" class="dg-hit"/>
+      <path d="M150,530 V610" class="dg-money" marker-end="url(#${id}-am)"/>
+      <text x="168" y="556" class="dg-flabel">PAID OUT</text>
+      <text x="168" y="580" class="dg-famt navy">${esc(F.outAmt)}</text>
+      <text x="168" y="598" class="dg-fsub">${esc(F.outCount)}</text>
+    </g>
+    ${dgNode(N.supplier, 20, 616, 300, 176)}
+
+    <g tabindex="0" data-dtip="${esc(F.tipGoods)}" class="dg-flow">
+      <rect x="322" y="160" width="76" height="560" class="dg-hit"/>
+      <path d="M324,704 H356 V172 H328" class="dg-goods" marker-end="url(#${id}-ag)"/>
+      <text transform="rotate(-90 388 438)" x="388" y="438" text-anchor="middle" class="dg-flabel goods">GOODS · ${esc(F.m(F.delivered))}</text>
+    </g>
+
+    <text x="20" y="836" class="dg-lane goods">GOODS FLOW · no effect on money</text>
+    <text x="20" y="856" class="dg-lane-r">Proforma pool ${esc(F.m(F.proforma))} · ${Math.round(F.goodsPct)}% delivered</text>
+    ${dgGoodsPool(id, 20, 866, 360, 16, F)}
+    <text x="20" y="908" class="dg-k">Delivered ${esc(F.m(F.delivered))}</text>
+    <text x="380" y="908" text-anchor="end" class="dg-k">To deliver ${esc(F.m(F.remaining))}</text>
+  </svg>`;
+}
+
+/* Floating tooltip for the diagram: hover (desktop), focus (keyboard), tap (touch). */
+function wireDiagram() {
+  const tip = document.getElementById('dg-tip');
+  if (!tip) return;
+  let pinned = null;
+  const place = (x, y) => {
+    const pad = 12, tw = tip.offsetWidth, th = tip.offsetHeight;
+    let left = x + 14, top = y + 16;
+    if (left + tw > window.innerWidth - pad) left = Math.max(pad, x - tw - 14);
+    if (top + th > window.innerHeight - pad) top = Math.max(pad, y - th - 14);
+    tip.style.left = left + 'px'; tip.style.top = top + 'px';
+  };
+  const show = (el, x, y) => { tip.textContent = el.getAttribute('data-dtip'); tip.classList.add('on'); place(x, y); };
+  const hide = () => { tip.classList.remove('on'); pinned = null; };
+  const centre = (el) => { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+  document.querySelectorAll('.dg-card [data-dtip]').forEach((el) => {
+    el.addEventListener('mouseenter', (e) => { if (!pinned) show(el, e.clientX, e.clientY); });
+    el.addEventListener('mousemove', (e) => { if (!pinned) place(e.clientX, e.clientY); });
+    el.addEventListener('mouseleave', () => { if (!pinned) hide(); });
+    el.addEventListener('focus', () => { const [x, y] = centre(el); show(el, x, y); });
+    el.addEventListener('blur', () => { if (!pinned) hide(); });
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (pinned === el) return hide();
+      pinned = el; const [x, y] = centre(el); show(el, x, y);
+    });
+  });
+  document.addEventListener('click', () => { if (pinned) hide(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
 }
 
 /* ---- Payments card: money IN from client, money OUT to supplier ---- */
@@ -767,28 +894,26 @@ function sectionCustomerJourneyRows(d, cur) {
     <div class="journey">${rows.map((p) => custRow(p, cur, d)).join('')}</div>`;
 }
 
-/* ---- Delivery card (separate layer, no money) ---- */
+/* ---- Delivery card: the goods flow against the proforma (no money effect) ---- */
 function deliveryCard(d, cur) {
   const c = d.computed;
-  const pctW = Math.min(100, c.deliveryPct);
+  const pctW = Math.min(100, c.deliveryPct || 0);
   const ro = d.deal.status !== 'active';
+  const posted = (d.supplierInvoices || []).filter((x) => x.status === 'posted').length;
   const body = `
     <div class="dl-head">
-      <div><div class="dl-big green">${money(c.deliveredValue, cur)}</div>
-        <div class="meta">delivered of ${money(c.deliveryTarget, cur)} (our invoice) · ${pct(c.deliveryPct)}</div>
-        <div class="meta">supplier proforma: ${money(c.deliveredProforma, cur)} delivered · ${money(c.proformaRemaining, cur)} remaining</div></div>
+      <div><div class="dl-big">${money(c.deliveredValue, cur)}</div>
+        <div class="meta">delivered of the ${money(c.deliveryTarget, cur)} proforma · ${pct(c.deliveryPct)}</div></div>
       <div class="dl-tags">
-        ${c.deliveryOutstanding > 0.005 ? `<span class="flow-tag amber">Awaiting ${money(c.deliveryOutstanding, cur)}</span>` : `<span class="flow-tag green">Fully delivered</span>`}
+        ${c.deliveryOutstanding > 0.005 ? `<span class="flow-tag amber">Still to deliver ${money(c.deliveryOutstanding, cur)}</span>` : `<span class="flow-tag green">Fully delivered</span>`}
         ${c.overDelivery > 0.005 ? `<span class="flow-tag red">Over-delivered ${money(c.overDelivery, cur)}</span>` : ''}
-        <span class="tag">${c.deliveryCount} batch${c.deliveryCount === 1 ? '' : 'es'}</span>
-        ${(() => { const un = (d.supplierInvoices || []).filter((x) => x.status === 'posted' && x.pay_status !== 'paid').length;
-          return un ? `<span class="flow-tag amber">${un} not marked paid</span>` : `<span class="flow-tag green">All marked paid</span>`; })()}
+        <span class="tag">${posted} ${posted === 1 ? 'delivery' : 'deliveries'}</span>
       </div>
     </div>
-    <div class="progress ${c.overDelivery > 0 ? 'over' : ''}" style="height:10px;margin:10px 0 14px"><span style="width:${pctW}%"></span></div>
+    <div class="progress goods ${c.overDelivery > 0 ? 'over' : ''}" style="height:10px;margin:10px 0 14px"><span style="width:${pctW}%"></span></div>
     ${deliveriesTable(d, cur)}`;
   const addBtn = !ro && canWrite() ? `<button class="btn sm primary" data-next="add-supp-inv">＋ Add a delivery</button>` : '';
-  return card('Deliveries — goods received (does not affect money)', body, addBtn);
+  return card('Goods flow — deliveries (no effect on money)', body, addBtn);
 }
 
 /* ---- Section 6: closeout ---- */
@@ -912,8 +1037,6 @@ function wireDeal(d) {
   });
   document.querySelectorAll('[data-tileupload]').forEach((b) => (b.onclick = () => quickUpload(deal.id, b.dataset.tileupload)));
   document.querySelectorAll('[data-preview]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); docPreview(Number(a.dataset.preview)); }));
-  document.querySelectorAll('[data-paypaid]').forEach((b) => (b.onclick = () => markPaidModal(b.dataset.paypaid)));
-  document.querySelectorAll('[data-payplan]').forEach((b) => (b.onclick = () => planPayModal(b.dataset.payplan)));
   document.querySelectorAll('[data-docdel]').forEach((b) => (b.onclick = () => {
     const id = b.dataset.docdel;
     const close = openModal('Delete file', '<p>Delete this uploaded file? This cannot be undone.</p>',
@@ -1063,19 +1186,15 @@ function suppPayModal(deal, d) {
 function suppInvModal(deal, c) {
   const cur = deal.currency;
   const body = `
-    <div class="alert info">A delivery records goods shipped against the supplier proforma. It does <b>not</b> change any payment. The delivery invoice file is required.</div>
+    <div class="alert info">A delivery reduces the <b>proforma pool</b> — what the supplier still has to deliver. It does <b>not</b> change any payment. The delivery invoice file is required.</div>
     <div class="form-row">
       <div class="field"><label>Delivery invoice number</label><input id="si_num" autofocus /></div>
       <div class="field"><label>Delivery date</label><input id="si_deliv" type="date" value="${today()}" /></div>
     </div>
-    <div class="field"><label>Value is stated in</label>
-      <select id="si_basis">
-        <option value="supplier">Supplier proforma terms</option>
-        <option value="client">Our client invoice terms</option>
-      </select></div>
+
     <div class="form-row">
-      <div class="field"><label>Value of this delivery</label><input id="si_amt" inputmode="decimal" />
-        <div class="hint" id="si_hint">Proforma ${money(deal.proforma_total, cur)} · remaining ${money(c.proformaRemaining, cur)}</div></div>
+      <div class="field"><label>Proforma value delivered</label><input id="si_amt" inputmode="decimal" />
+        <div class="hint">As stated on the delivery invoice. Proforma ${money(deal.proforma_total, cur)} · still to deliver ${money(c.deliveryOutstanding, cur)}</div></div>
       <div class="field"><label>Quantity (optional)</label><input id="si_qty" placeholder="e.g. 5,000 units" /></div>
     </div>
     <div class="upload-req">
@@ -1094,12 +1213,6 @@ function suppInvModal(deal, c) {
     document.getElementById('dl_name').textContent = f ? f.name : 'No file chosen';
     document.getElementById('dl_lab').classList.toggle('ok', !!f);
   });
-  const basis = document.getElementById('si_basis'), hint = document.getElementById('si_hint');
-  basis.onchange = () => {
-    hint.textContent = basis.value === 'supplier'
-      ? `Proforma ${money(deal.proforma_total, cur)} · remaining ${money(c.proformaRemaining, cur)}`
-      : `Our invoice ${money(deal.invoice_total, cur)} · remaining ${money(c.deliveryOutstanding, cur)}`;
-  };
   document.getElementById('si_save').onclick = async () => {
     const file = fileIn.files[0];
     if (!file) return showErr('si_err', 'Attach the delivery invoice file — a delivery cannot be saved without it.');
@@ -1107,7 +1220,7 @@ function suppInvModal(deal, c) {
     fd.append('file', file);
     fd.append('invoice_number', v('si_num'));
     fd.append('delivery_date', v('si_deliv'));
-    fd.append('basis', basis.value);
+    fd.append('basis', 'supplier');
     fd.append('amount', v('si_amt'));
     fd.append('quantity', v('si_qty'));
     fd.append('notes', v('si_notes'));

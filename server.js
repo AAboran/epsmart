@@ -77,8 +77,9 @@ const PRIVATE_FIELDS = [
   'heldInHouse', 'supplierShareHeld', 'companyMoneyFronted',
   'forecastProfit', 'targetProfit', 'profitVsTarget',
   'supplierReserveCollected', 'reserveAvailableForSupplier',
-  'proformaTotal', 'supplierOwed', 'supplierOpenToPay', 'supplierOverpaid',
-  'deliveredProforma', 'proformaRemaining', 'markupRatio',
+  'supplierOwed', 'supplierOpenToPay', 'supplierOverpaid', 'markupRatio',
+  // legacy alias names that carry the same private values
+  'supplierFundingShortfall', 'companyMoneyUsed', 'supplierInvoicesOpen', 'supplierOverpayment',
 ];
 function scrubComputed(c, user) {
   if (!c || user.role === 'admin') return c;
@@ -95,7 +96,6 @@ function scrubPayments(rows, user) {
 function scrubDeal(deal, user) {
   if (user.role === 'admin') return deal;
   const o = { ...deal };
-  delete o.proforma_total;          // supplier's price stays private
   delete o.supplier_prepay_required;
   return o;
 }
@@ -382,7 +382,7 @@ app.post('/api/deals/:id/supplier-invoices', requireAuth, requireRole('admin', '
   if (!b.invoice_number) return res.status(400).json({ error: 'A delivery invoice number is required.' });
 
   // Value may be given in supplier (proforma) terms or in our client-invoice terms.
-  const basis = b.basis === 'client' ? 'client' : 'supplier';
+  const basis = 'supplier'; // delivery invoices always state the proforma value
   const entered = num(b.amount);
   if (!(entered > 0)) return res.status(400).json({ error: 'Enter the value of this delivery.' });
   const proformaTotal = Number(d.proforma_total) || 0;
@@ -518,28 +518,6 @@ app.get('/api/documents/:id/file', requireAuth, wrap(async (req, res) => {
   res.setHeader('Content-Type', doc.mime);
   res.setHeader('Content-Disposition', `inline; filename="${String(doc.original_name).replace(/"/g, '')}"`);
   res.send(doc.content); // bytea -> Buffer
-}));
-
-// ---------- delivery payment status (tracking flag, not a ledger entry) ----------
-app.patch('/api/deliveries/:id/payment', requireAuth, requireRole('admin', 'office'), wrap(async (req, res) => {
-  const row = (await query('SELECT * FROM supplier_invoices WHERE id=$1', [Number(req.params.id)])).rows[0];
-  if (!row) return res.status(404).json({ error: 'Delivery not found.' });
-  const b = req.body || {};
-  const status = b.status === 'paid' ? 'paid' : 'unpaid';
-  if (status === 'paid') {
-    const paidDate = b.date || new Date().toISOString().slice(0, 10);
-    await query("UPDATE supplier_invoices SET pay_status='paid', paid_date=$1, planned_pay_date=NULL WHERE id=$2", [paidDate, row.id]);
-    await audit(row.deal_id, req.user, 'delivery_marked_paid', 'supplier_invoice', row.id, { date: paidDate });
-    await notify(['admin'], row.deal_id, 'Delivery marked as paid',
-      `Delivery ${row.invoice_number} marked paid on ${paidDate} by ${req.user.name}.`, 'money', req.user.id);
-  } else {
-    if (!b.date) return res.status(400).json({ error: 'Set the date you plan to pay this delivery.' });
-    await query("UPDATE supplier_invoices SET pay_status='unpaid', planned_pay_date=$1, paid_date=NULL WHERE id=$2", [b.date, row.id]);
-    await audit(row.deal_id, req.user, 'delivery_payment_planned', 'supplier_invoice', row.id, { date: b.date });
-    await notify(['admin'], row.deal_id, 'Delivery payment date set',
-      `Delivery ${row.invoice_number} planned for payment on ${b.date}.`, 'info', req.user.id);
-  }
-  res.json({ ok: true });
 }));
 
 // ---------- notifications ----------
