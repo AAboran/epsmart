@@ -134,6 +134,7 @@ function shell(title, bodyHtml, actionsHtml = '') {
   const pendingBadge = State._pendingCount ? `<span class="badge">${State._pendingCount}</span>` : '';
   const nav = [
     ['deals', 'Deals'],
+    ['overview', 'Overview'],
     ['reports', 'Total Finances'],
     ['approvals', 'Approvals', isAdmin() ? pendingBadge : ''],
     ['users', 'User access', ''],
@@ -146,7 +147,7 @@ function shell(title, bodyHtml, actionsHtml = '') {
       <aside class="sidebar" id="sidebar">
         <div class="brand"><img src="/img/europa-icon.png" alt="" class="brand-icon" /><div class="brand-tx">Europa Pharmaceutical<span>Deal Control</span></div></div>
         ${nav.map(([n, label, badge]) => `
-          <button class="nav-item ${State.route.name === n ? 'active' : ''}" data-nav="${n}">
+          <button class="nav-item ${(({ deal: 'deals', flow: 'overview' })[State.route.name] || State.route.name) === n ? 'active' : ''}" data-nav="${n}">
             ${label} ${badge || ''}
           </button>`).join('')}
         <div class="nav-spacer"></div>
@@ -202,57 +203,52 @@ async function renderDeals() {
         ? `<div class="stat"><div class="label">Our income kept</div><div class="value gold tnum">${money(p.totalIncomeKept)}</div><div class="stat-sub">of ${money(p.totalIncomeExpected)} expected</div></div>`
         : `<div class="stat"><div class="label">Unpaid for delivered goods</div><div class="value tnum">${money(p.totalUnderpaidToDate || 0)}</div></div>`}
     </div>
-    ${data.deals.length ? `<div class="deal-list">${cards}</div>` :
+    ${data.deals.length ? `<div class="dcard-grid">${cards}</div>` :
       `<div class="empty"><h3>No active deals yet</h3><p>${canWrite() ? 'Create your first deal to start tracking payments and deliveries.' : 'Deals will appear here once created.'}</p></div>`}
   `, actions);
 
-  document.querySelectorAll('[data-deal]').forEach((c) => (c.onclick = () => go('deal', { id: Number(c.dataset.deal) })));
+  document.querySelectorAll('[data-deal]').forEach((c) => {
+    c.onclick = () => go('deal', { id: Number(c.dataset.deal) });
+    c.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); c.click(); } };
+  });
   const nd = document.getElementById('newdeal');
   if (nd) nd.onclick = newDealModal;
 }
 
 function dealCard(d) {
-  const c = d.computed, cur = d.currency;
-  const na = d.nextAction;
+  const c = d.computed, cur = d.currency, na = d.nextAction;
   const naClass = na.priority === 0 ? 'attn' : (na.code === 'complete_deal' ? 'done' : '');
-  const paidToSupplier = (c.supplierInvoicePaid || 0) + (c.supplierPrepaySent || 0);
-  const supplierOwed = c.supplierInvoicesGross > 0 ? c.supplierInvoicesGross : d.proforma_total;
-  const recvPct = d.invoice_total > 0 ? Math.min(100, c.totalReceived / d.invoice_total * 100) : 0;
-  const paidPct = supplierOwed > 0 ? Math.min(100, paidToSupplier / supplierOwed * 100) : 0;
+  const invoice = Number(d.invoice_total) || 0;
+  const paidOut = c.totalPaidToSupplier || 0;
+  const recvPct = invoice > 0 ? Math.min(100, (c.totalReceived / invoice) * 100) : 0;
+  const outPct = (Number(d.proforma_total) || 0) > 0 ? Math.min(100, (paidOut / Number(d.proforma_total)) * 100) : 0;
+  const bar = (label, val, pctv, cls, sub) => `
+    <div class="dc-bar">
+      <div class="dc-bar-top"><span>${label}</span><b class="${cls}">${val}</b></div>
+      <div class="progress ${cls}"><span style="width:${pctv}%"></span></div>
+      <div class="meta">${sub}</div>
+    </div>`;
   return `
-    <div class="deal-card" data-deal="${d.id}" tabindex="0" role="button">
-      <div class="dc-main">
-        <div class="ref">${esc(d.ref)} · <span class="pill ${d.status === 'active' ? 'blue' : d.status === 'completed' ? 'green' : 'gray'}">${esc(d.status)}</span></div>
-        <div class="title">${esc(d.title)}</div>
-        <div class="parties">${esc(d.customer_name)} &nbsp;→&nbsp; ${esc(d.supplier_name)}</div>
-        <div class="dc-bars">
-          <div class="dc-bar">
-            <div class="dc-bar-top"><span>Received from client</span><b class="green">${money(c.totalReceived, cur)}</b></div>
-            <div class="progress"><span style="width:${recvPct}%"></span></div>
-            ${c.customerBalance > 0.005 ? `<div class="meta">still to collect ${money(c.customerBalance, cur)}</div>` : `<div class="meta green">fully collected</div>`}
-          </div>
-          <div class="dc-bar">
-            <div class="dc-bar-top"><span>Paid to supplier</span><b class="blue">${money(paidToSupplier, cur)}</b></div>
-            <div class="progress blue"><span style="width:${paidPct}%"></span></div>
-            ${c.supplierOpenToPay > 0.005 ? `<div class="meta">open to be paid ${money(c.supplierOpenToPay, cur)}</div>` : `<div class="meta green">nothing open</div>`}
-          </div>
-          <div class="dc-bar">
-            <div class="dc-bar-top"><span>Goods delivered <span class="tag" style="margin-left:4px">of proforma</span></span><b class="gold">${pct(c.deliveryPct)}</b></div>
-            <div class="progress ${c.overDelivery > 0 ? 'over' : ''}"><span style="width:${Math.min(100, c.deliveryPct)}%"></span></div>
-            <div class="meta">${money(c.deliveredValue, cur)} of ${money(c.deliveryTarget, cur)}</div>
-          </div>
-        </div>
+    <div class="dcard" data-deal="${d.id}" tabindex="0" role="button" aria-label="Open deal ${esc(d.ref)}">
+      <div class="dcard-top">
+        <span class="dcard-ref">${esc(d.ref)}</span>
+        <span class="pill ${d.status === 'active' ? 'blue' : d.status === 'completed' ? 'green' : 'gray'}">${esc(d.status)}</span>
       </div>
-      <div class="dc-side">
+      <div class="dcard-title">${esc(d.title)}</div>
+      <div class="dcard-parties">${esc(d.customer_name)} <span>·</span> ${esc(d.supplier_name)}</div>
+      <div class="dcard-figs">
+        <div><span>Deal value</span><b>${money(invoice, cur)}</b></div>
         ${isAdmin()
-          ? `<div class="dc-income"><div class="k">Our income</div><div class="v">${money(c.incomeKept, cur)}</div></div>`
-          : `<div class="dc-income ${c.clientUnderpaidToDate > 0.005 ? 'warn' : ''}"><div class="k">Unpaid for delivered</div><div class="v">${money(c.clientUnderpaidToDate, cur)}</div></div>`}
-        <div class="next-action ${naClass}">
-          <div class="k">Next action</div>
-          <div class="v">${esc(na.label)}</div>
-        </div>
-        ${c.supplierFundingShortfall > 0.005 ? `<span class="pill red">Funding gap ${money(c.supplierFundingShortfall, cur)}</span>` : ''}
+          ? `<div class="gold"><span>Our income</span><b>${money(c.feeTotal, cur)}</b></div>`
+          : `<div class="gold"><span>4% fee paid</span><b>${money(c.feePaid, cur)}</b></div>`}
       </div>
+      <div class="dcard-bars">
+        ${bar('Paid in', money(c.totalReceived, cur), recvPct, 'green', c.customerBalance > 0.005 ? `${money(c.customerBalance, cur)} still to collect` : 'fully collected')}
+        ${bar('Paid out', money(paidOut, cur), outPct, 'blue', isAdmin() ? (c.supplierOpenToPay > 0.005 ? `${money(c.supplierOpenToPay, cur)} open to pay` : 'nothing open') : 'paid to the supplier')}
+        ${bar('Delivered', pct(c.deliveryPct), Math.min(100, c.deliveryPct || 0), 'navy', `${money(c.deliveredValue, cur)} of ${money(c.deliveryTarget, cur)} proforma`)}
+      </div>
+      <div class="dcard-next ${naClass}"><span>Next</span> ${esc(na.label)}</div>
+      ${isAdmin() && c.companyMoneyFronted > 0.005 ? `<span class="pill red" style="margin-top:8px">Fronted ${money(c.companyMoneyFronted, cur)}</span>` : ''}
     </div>`;
 }
 
@@ -374,6 +370,8 @@ async function renderDeal() {
 
   const actions = `
     <button class="btn" id="back">← Deals</button>
+    <button class="btn" id="to-flow">Flows</button>
+    ${isAdmin() ? `<button class="btn" id="deal-report">Partner report</button>` : ''}
     ${isAdmin() && deal.status === 'active' ? `<button class="btn" id="editdeal">Edit deal</button>` : ''}
     ${isAdmin() && deal.status === 'active' ? `<button class="btn primary" id="complete">Mark complete</button>` : ''}
     ${isAdmin() && deal.status === 'active' ? `<button class="btn" id="archive">Archive</button>` : ''}
@@ -416,6 +414,7 @@ async function renderDeal() {
 
     <!-- GOODS FLOW: deliveries against the proforma -->
     ${deliveryCard(d, cur)}
+    ${goodsDiagram(d)}
 
     <!-- DOCUMENTS -->
     <div class="section-title" style="margin:24px 0 12px">Documents — tap a tile to upload</div>
@@ -542,14 +541,73 @@ function deliveriesTable(d, cur) {
           <td data-label="Date">${fdate(i.delivery_date || i.issue_date)}</td>
           <td class="num" data-label="Proforma value">${money(i.proforma_allocated || 0, cur)}</td>
           <td data-label="Qty">${esc(i.quantity || '—')}</td>
-          <td class="num" data-label="">
-            ${isAdmin() && i.status === 'posted' ? `<button class="btn sm danger" data-void='supplier_invoice:${i.id}'>Void</button>` : ''}
-          </td>
+          <td class="num" data-label="">${deliveryActions(d, i)}</td>
         </tr>`;
       }).join('')}
       </tbody>
     </table>`;
 }
+/* Fix (✎) and Void for a delivery row. Admins change it directly; anyone else
+   sends a request that waits for an administrator's approval. */
+function deliveryActions(d, i) {
+  if (i.status !== 'posted' || !canWrite() || d.deal.status !== 'active') return '';
+  const pending = (d.pendingApprovals || []).find((a) => a.entity_type === 'supplier_invoice' && a.entity_id === i.id && (a.action === 'edit' || a.action === 'void'));
+  if (pending) return `<span class="pill amber">${pending.action === 'void' ? 'void' : 'fix'} awaiting approval</span>`;
+  return `<button class="btn sm icon-btn" data-dfix="${i.id}" aria-label="Fix delivery ${esc(i.invoice_number)}" title="Fix this delivery">✎ Fix</button>
+    <button class="btn sm danger" data-dvoid="${i.id}" aria-label="Void delivery ${esc(i.invoice_number)}">Void</button>`;
+}
+function deliveryFixModal(d, id) {
+  const i = d.supplierInvoices.find((x) => x.id === id);
+  if (!i) return;
+  const cur = d.deal.currency;
+  const body = `
+    ${isAdmin() ? '' : '<div class="alert info">Your correction will be sent to Europa for approval. Nothing changes until it is approved.</div>'}
+    <div class="form-row">
+      <div class="field"><label>Delivery invoice number</label><input id="fx_num" value="${esc(i.invoice_number)}" /></div>
+      <div class="field"><label>Delivery date</label><input id="fx_date" type="date" value="${esc((i.delivery_date || i.issue_date || '').slice(0, 10))}" /></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Proforma value delivered</label><input id="fx_amt" inputmode="decimal" value="${Number(i.proforma_allocated) || ''}" />
+        <div class="hint">Currently ${money(i.proforma_allocated || 0, cur)}</div></div>
+      <div class="field"><label>Quantity (optional)</label><input id="fx_qty" value="${esc(i.quantity || '')}" /></div>
+    </div>
+    <div class="field"><label>Notes</label><textarea id="fx_notes">${esc(i.notes || '')}</textarea></div>
+    <div id="fx_err" class="alert err hidden"></div>`;
+  const close = openModal('Fix delivery ' + i.invoice_number, body,
+    `<button class="btn" id="fx_no">Cancel</button><button class="btn primary" id="fx_yes">${isAdmin() ? 'Save correction' : 'Send for approval'}</button>`);
+  document.getElementById('fx_no').onclick = close;
+  document.getElementById('fx_yes').onclick = async () => {
+    const payload = { invoice_number: v('fx_num'), delivery_date: v('fx_date'), amount: v('fx_amt'), quantity: v('fx_qty'), notes: document.getElementById('fx_notes').value.trim() };
+    try {
+      const r = await api('/deliveries/' + id, { method: 'PATCH', body: payload });
+      close(); ok(r.status === 'pending' ? 'Correction sent for approval.' : 'Delivery corrected.'); rerenderCurrent();
+    } catch (e) { showErr('fx_err', e.message); }
+  };
+}
+function deliveryVoidModal(d, id) {
+  const i = d.supplierInvoices.find((x) => x.id === id);
+  if (!i) return;
+  const body = `<p>Void delivery <b>${esc(i.invoice_number)}</b> (${money(i.proforma_allocated || 0, d.deal.currency)})? It stays in the history but no longer counts towards delivered goods.</p>
+    ${isAdmin() ? '' : '<div class="alert info">This will be sent to Europa for approval.</div>'}
+    <div class="field"><label>Reason (required)</label><textarea id="dv_reason" placeholder="e.g. entered twice, wrong deal"></textarea></div>
+    <div id="dv_err" class="alert err hidden"></div>`;
+  const close = openModal('Void delivery', body,
+    `<button class="btn" id="dv_no">Cancel</button><button class="btn danger" id="dv_yes">${isAdmin() ? 'Void delivery' : 'Request void'}</button>`);
+  document.getElementById('dv_no').onclick = close;
+  document.getElementById('dv_yes').onclick = async () => {
+    try {
+      const r = await api('/deliveries/' + id + '/void', { method: 'POST', body: { reason: v('dv_reason') } });
+      close(); ok(r.status === 'pending' ? 'Void request sent for approval.' : 'Delivery voided.'); rerenderCurrent();
+    } catch (e) { showErr('dv_err', e.message); }
+  };
+}
+function wireDeliveryButtons(d) {
+  document.querySelectorAll('[data-dfix]').forEach((b) => (b.onclick = () => deliveryFixModal(d, Number(b.dataset.dfix))));
+  document.querySelectorAll('[data-dvoid]').forEach((b) => (b.onclick = () => deliveryVoidModal(d, Number(b.dataset.dvoid))));
+}
+/* Re-render whichever deal view is open (full deal page or the flow view). */
+function rerenderCurrent() { return State.route.name === 'flow' ? renderFlow() : renderDeal(); }
+
 function sectionSupplierInvoices() { return ''; /* deliveries now shown in their own card */ }
 
 /* =====================================================================
@@ -649,7 +707,6 @@ function dealDiagram(d) {
           <span><i class="lg goods"></i> Goods flow — deliveries, no effect on money</span>
         </div>
       </div>
-      <div class="dg-tip" id="dg-tip" role="tooltip"></div>
     </div>`;
 }
 
@@ -795,10 +852,20 @@ function dgSvgTall(N, F) {
   </svg>`;
 }
 
-/* Floating tooltip for the diagram: hover (desktop), focus (keyboard), tap (touch). */
+/* Floating tooltip for diagrams: hover (desktop), focus (keyboard), tap (touch).
+   One shared tooltip element lives on <body>, so any number of diagrams can use it. */
+function dgTipEl() {
+  let t = document.getElementById('dg-tip');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'dg-tip'; t.className = 'dg-tip'; t.setAttribute('role', 'tooltip');
+    document.body.appendChild(t);
+  }
+  return t;
+}
 function wireDiagram() {
-  const tip = document.getElementById('dg-tip');
-  if (!tip) return;
+  const tip = dgTipEl();
+  tip.classList.remove('on');
   let pinned = null;
   const place = (x, y) => {
     const pad = 12, tw = tip.offsetWidth, th = tip.offsetHeight;
@@ -822,8 +889,165 @@ function wireDiagram() {
       pinned = el; const [x, y] = centre(el); show(el, x, y);
     });
   });
-  document.addEventListener('click', () => { if (pinned) hide(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
+  if (!State._tipGlobal) {   // register the page-wide close handlers only once
+    State._tipGlobal = true;
+    document.addEventListener('click', () => dgTipEl().classList.remove('on'));
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') dgTipEl().classList.remove('on'); });
+  }
+}
+
+/* =====================================================================
+   GOODS FLOW DIAGRAM — the supplier ships the proforma in batches.
+   Shows each delivery on a timeline, and checks delivered value against
+   what has been paid: goods can arrive before they are paid for (we then
+   owe the supplier), or be paid for before they arrive (we wait for goods).
+   ===================================================================== */
+function goodsDiagram(d) {
+  const deal = d.deal, c = d.computed, cur = deal.currency;
+  const m = (v) => money(v, cur);
+  const posted = (arr) => (arr || []).filter((x) => x.status === 'posted');
+  const dels = posted(d.supplierInvoices).slice().sort((a, b) => String(a.delivery_date || a.issue_date || '').localeCompare(String(b.delivery_date || b.issue_date || '')) || a.id - b.id);
+  const paidOut = posted(d.supplierPayments).reduce((a, p) => a + Number(p.amount || 0), 0);
+  const proforma = Number(deal.proforma_total) || 0;
+  const invoice = Number(deal.invoice_total) || 0;
+  const delivered = c.deliveredValue || 0;
+  const deliveredClient = c.deliveredClient || 0;
+
+  // Supplier check: delivered (proforma value) vs paid to the supplier.
+  const supGap = Math.round((delivered - paidOut) * 100) / 100;
+  const sup = supGap > 0.005
+    ? { cls: 'amber', text: `Delivered, not yet paid ${m(supGap)}`, tip: `Goods worth ${m(delivered)} have been delivered, but only ${m(paidOut)} has been paid to the supplier.\n${m(supGap)} of delivered goods is still unpaid — a payment to the supplier is due.` }
+    : supGap < -0.005
+      ? { cls: 'blue', text: `Paid ahead, awaiting goods ${m(-supGap)}`, tip: `${m(paidOut)} has been paid to the supplier, but goods worth only ${m(delivered)} have been delivered.\n${m(-supGap)} is paid in advance and waiting to be delivered.` }
+      : { cls: 'green', text: 'Delivered and paid are in balance', tip: `Delivered ${m(delivered)} · paid to supplier ${m(paidOut)}.` };
+  // Client check: goods received (at invoice value) vs paid by the client.
+  const cliGap = Math.round((deliveredClient - c.totalReceived) * 100) / 100;
+  const cli = cliGap > 0.005
+    ? { cls: 'amber', text: `Client owes for delivered goods ${m(cliGap)}`, tip: `The client has received goods worth ${m(deliveredClient)} at invoice prices, but has paid ${m(c.totalReceived)}.\n${m(cliGap)} is owed for goods already delivered.` }
+    : cliGap < -0.005
+      ? { cls: 'blue', text: `Client paid ahead of delivery ${m(-cliGap)}`, tip: `The client has paid ${m(c.totalReceived)}, ahead of goods delivered worth ${m(deliveredClient)} at invoice prices.` }
+      : { cls: 'green', text: 'Client payments match deliveries', tip: `Goods delivered ${m(deliveredClient)} at invoice prices · paid ${m(c.totalReceived)}.` };
+
+  const G = {
+    m, cur, dels, proforma, invoice, delivered, deliveredClient, paidOut, received: c.totalReceived,
+    remaining: c.deliveryOutstanding || 0, pct: Math.min(100, c.deliveryPct || 0), sup, cli,
+    tipGoodsPool: `Proforma pool ${m(proforma)} — what the supplier committed to deliver.\nDelivered ${m(delivered)} · still to deliver ${m(c.deliveryOutstanding)}.`,
+    supNode: {
+      role: 'Supplier · ships goods', name: deal.supplier_name, accent: 'navy',
+      tip: `${deal.supplier_name} ships the proforma (${m(proforma)}) in batches as goods are produced.\nDelivered ${m(delivered)} so far, ${m(c.deliveryOutstanding)} still to deliver.`,
+      lines: [['Proforma', m(proforma), ''], ['Delivered', m(delivered), 'navy'],
+        ['Still to deliver', m(c.deliveryOutstanding), c.deliveryOutstanding > 0.005 ? 'amber' : 'green']],
+    },
+    cliNode: {
+      role: 'Client · receives goods', name: deal.customer_name, accent: 'green',
+      tip: `${deal.customer_name} receives goods directly from the supplier.\nGoods received are worth ${m(deliveredClient)} at invoice prices; the client has paid ${m(c.totalReceived)}.`,
+      lines: [['Goods received', m(deliveredClient), 'navy'], ['Paid by client', m(c.totalReceived), 'green'],
+        cliGap > 0.005 ? ['Owes for goods', m(cliGap), 'amber'] : ['Paid ahead', m(Math.max(0, -cliGap)), 'green']],
+    },
+  };
+  return `
+    <div class="card dg-card">
+      <div class="card-h"><h3>Goods flow</h3><div style="flex:1"></div><span class="meta">Deliveries against the proforma · hover or tap for details</span></div>
+      <div class="card-b">
+        ${gdSvgWide(G)}
+        ${gdSvgTall(G)}
+        <div class="dg-legend">
+          <span><i class="lg goods"></i> Delivery (proforma value)</span>
+          <span><i class="lg sw navy"></i> Delivered</span>
+          <span><i class="lg sw gold"></i> Paid to supplier</span>
+          <span><i class="lg sw green"></i> Paid by client</span>
+        </div>
+      </div>
+    </div>`;
+}
+
+/* compact money for timeline labels: €9,961 / €12.3k / €1.2M */
+function shortMoney(v, cur) {
+  const sym = { EUR: '€', USD: '$', GBP: '£', RUB: '₽' }[cur] || '';
+  const a = Math.abs(Number(v) || 0);
+  if (a >= 1e6) return sym + (a / 1e6).toFixed(a >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M';
+  if (a >= 1e5) return sym + Math.round(a / 1e3) + 'k';
+  return sym + Math.round(a).toLocaleString('en-US');
+}
+function gdDate(s) {
+  if (!s) return 'no date';
+  const [y, mo, d] = String(s).slice(0, 10).split('-').map(Number);
+  return `${d} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][mo - 1] || ''}` + (y !== new Date().getFullYear() ? ` ${String(y).slice(2)}` : '');
+}
+/* a delivered-vs-paid comparison: two bars over the same scale, plus a verdict */
+function gdCheck(x, y, w, label, total, a, aCls, b, bCls, verdict, tall) {
+  const sc = (v) => Math.max(0, Math.min(w, total > 0 ? (w * v) / total : 0));
+  const vy = tall ? y + 58 : y;
+  return `<g class="dg-flow" tabindex="0" data-dtip="${esc(verdict.tip)}">
+    <rect x="${x}" y="${y - 16}" width="${w}" height="${tall ? 82 : 54}" class="dg-hit"/>
+    <text x="${x}" y="${y}" class="dg-lane-r">${esc(label)}</text>
+    <text x="${tall ? x : x + w}" y="${vy}" ${tall ? '' : 'text-anchor="end"'} class="dg-verdict ${verdict.cls}">${esc(verdict.text)}</text>
+    <rect x="${x}" y="${y + 10}" width="${w}" height="10" rx="5" class="dg-track"/>
+    ${sc(a) > 0 ? `<rect x="${x}" y="${y + 10}" width="${sc(a)}" height="10" rx="5" class="dg-fill ${aCls}"/>` : ''}
+    <rect x="${x}" y="${y + 24}" width="${w}" height="10" rx="5" class="dg-track"/>
+    ${sc(b) > 0 ? `<rect x="${x}" y="${y + 24}" width="${sc(b)}" height="10" rx="5" class="dg-fill ${bCls}"/>` : ''}
+  </g>`;
+}
+/* delivery timeline markers, evenly spaced; long histories collapse the oldest */
+function gdMarkers(G, pts, tall) {
+  const MAX = tall ? 7 : 6;
+  const shown = G.dels.length > MAX ? G.dels.slice(-MAX) : G.dels;
+  const hidden = G.dels.length - shown.length;
+  const out = shown.map((dl, i) => {
+    const [x, y] = pts(i, shown.length);
+    const val = Number(dl.proforma_allocated) || 0;
+    const tip = `Delivery ${dl.invoice_number}\n${fdate(dl.delivery_date || dl.issue_date)} · ${G.m(val)} (proforma value)` + (dl.quantity ? `\nQuantity: ${dl.quantity}` : '');
+    const lbl = tall
+      ? `<text x="${x + 18}" y="${y - 2}" class="dg-fsub">${esc(gdDate(dl.delivery_date || dl.issue_date))}</text><text x="${x + 18}" y="${y + 15}" class="dg-famt goods sm">${esc(shortMoney(val, G.cur))}</text>`
+      : `<text x="${x}" y="${y - 16}" text-anchor="middle" class="dg-fsub">${esc(gdDate(dl.delivery_date || dl.issue_date))}</text><text x="${x}" y="${y + 28}" text-anchor="middle" class="dg-famt goods sm">${esc(shortMoney(val, G.cur))}</text>`;
+    return `<g class="dg-flow" tabindex="0" data-dtip="${esc(tip)}"><circle cx="${x}" cy="${y}" r="9" class="dg-dot"/><text x="${x}" y="${y + 4}" text-anchor="middle" class="dg-dotn">${i + 1 + hidden}</text>${lbl}</g>`;
+  }).join('');
+  return { out, hidden };
+}
+function gdSvgWide(G) {
+  const id = 'gdw';
+  const x0 = 290, x1 = 710, ty = 158;
+  const mk = gdMarkers(G, (i, n) => [n === 1 ? (x0 + x1) / 2 : x0 + 30 + (i * (x1 - x0 - 60)) / (n - 1), ty], false);
+  return `<svg class="dg-svg dg-wide" viewBox="0 0 1000 420" role="img" aria-label="Goods flow diagram">
+    ${dgDefs(id)}
+    <text x="20" y="22" class="dg-lane goods">GOODS FLOW · no effect on money</text>
+    <text x="980" y="22" text-anchor="end" class="dg-lane-r">Proforma pool ${esc(G.m(G.proforma))} · ${Math.round(G.pct)}% delivered</text>
+    ${dgGoodsPool(id, 20, 32, 960, 14, G)}
+    ${dgNode(G.supNode, 20, 72, 250, 176)}
+    ${dgNode(G.cliNode, 730, 72, 250, 176)}
+    <g class="dg-flow" tabindex="0" data-dtip="${esc(G.dels.length ? `${G.dels.length} ${G.dels.length === 1 ? 'delivery' : 'deliveries'} totalling ${G.m(G.delivered)} (proforma value).\nStill to deliver ${G.m(G.remaining)}.` : 'No deliveries yet. The supplier ships in batches as goods are produced.')}">
+      <rect x="274" y="96" width="452" height="120" class="dg-hit"/>
+      <text x="500" y="102" text-anchor="middle" class="dg-flabel goods">SHIPPED DIRECTLY · ${G.dels.length} ${G.dels.length === 1 ? 'DELIVERY' : 'DELIVERIES'}</text>
+      <path d="M274,${ty} H724" class="dg-goods" marker-end="url(#${id}-ag)"/>
+      ${G.dels.length ? '' : `<text x="500" y="${ty + 30}" text-anchor="middle" class="dg-fsub">no deliveries yet</text>`}
+      ${mk.hidden ? `<text x="${x0 + 4}" y="${ty + 48}" class="dg-fsub">+${mk.hidden} earlier</text>` : ''}
+    </g>
+    ${mk.out}
+    ${gdCheck(20, 296, 960, `SUPPLIER · delivered ${G.m(G.delivered)} vs paid ${G.m(G.paidOut)}`, Math.max(G.proforma, G.delivered, G.paidOut), G.delivered, 'navy', G.paidOut, 'gold', G.sup, false)}
+    ${gdCheck(20, 368, 960, `CLIENT · goods received ${G.m(G.deliveredClient)} vs paid ${G.m(G.received)}`, Math.max(G.invoice, G.deliveredClient, G.received), G.deliveredClient, 'navy', G.received, 'money', G.cli, false)}
+  </svg>`;
+}
+function gdSvgTall(G) {
+  const id = 'gdt';
+  const tx = 60, y0 = 270, y1 = 470;
+  const mk = gdMarkers(G, (i, n) => [tx, n === 1 ? (y0 + y1) / 2 : y0 + 18 + (i * (y1 - y0 - 36)) / (n - 1)], true);
+  return `<svg class="dg-svg dg-tall" viewBox="0 0 400 860" role="img" aria-label="Goods flow diagram">
+    ${dgDefs(id)}
+    <text x="20" y="22" class="dg-lane goods">GOODS FLOW · no effect on money</text>
+    <text x="20" y="42" class="dg-lane-r">Proforma pool ${esc(G.m(G.proforma))} · ${Math.round(G.pct)}% delivered</text>
+    ${dgGoodsPool(id, 20, 52, 360, 14, G)}
+    ${dgNode(G.supNode, 20, 84, 360, 176)}
+    <g class="dg-flow" tabindex="0" data-dtip="${esc(G.dels.length ? `${G.dels.length} deliveries totalling ${G.m(G.delivered)}.` : 'No deliveries yet.')}">
+      <rect x="20" y="262" width="360" height="218" class="dg-hit"/>
+      <path d="M${tx},264 V474" class="dg-goods" marker-end="url(#${id}-ag)"/>
+      ${G.dels.length ? '' : `<text x="${tx + 18}" y="372" class="dg-fsub">no deliveries yet</text>`}
+      ${mk.hidden ? `<text x="${tx + 150}" y="372" class="dg-fsub">+${mk.hidden} earlier</text>` : ''}
+    </g>
+    ${mk.out}
+    ${dgNode(G.cliNode, 20, 480, 360, 176)}
+    ${gdCheck(20, 692, 360, 'SUPPLIER · delivered vs paid', Math.max(G.proforma, G.delivered, G.paidOut), G.delivered, 'navy', G.paidOut, 'gold', G.sup, true)}
+    ${gdCheck(20, 784, 360, 'CLIENT · received vs paid', Math.max(G.invoice, G.deliveredClient, G.received), G.deliveredClient, 'navy', G.received, 'money', G.cli, true)}
+  </svg>`;
 }
 
 /* ---- Payments card: money IN from client, money OUT to supplier ---- */
@@ -1001,6 +1225,9 @@ function uploadAttr(type, id) { return type + ':' + id; }
 function wireDeal(d) {
   const deal = d.deal;
   document.getElementById('back').onclick = () => go('deals');
+  document.getElementById('to-flow').onclick = () => go('flow', { id: deal.id });
+  const drb = document.getElementById('deal-report');
+  if (drb) drb.onclick = () => partnerReportModal([{ id: deal.id, ref: deal.ref, title: deal.title, customer_name: deal.customer_name }], [deal.id]);
   const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
   bind('complete', () => completeDeal(deal));
   bind('closeout-complete', () => completeDeal(deal));
@@ -1037,6 +1264,7 @@ function wireDeal(d) {
   });
   document.querySelectorAll('[data-tileupload]').forEach((b) => (b.onclick = () => quickUpload(deal.id, b.dataset.tileupload)));
   document.querySelectorAll('[data-preview]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); docPreview(Number(a.dataset.preview)); }));
+  wireDeliveryButtons(d);
   document.querySelectorAll('[data-docdel]').forEach((b) => (b.onclick = () => {
     const id = b.dataset.docdel;
     const close = openModal('Delete file', '<p>Delete this uploaded file? This cannot be undone.</p>',
@@ -1158,6 +1386,15 @@ function suppPayModal(deal, d) {
   const cur = deal.currency, c = d.computed;
   const body = `
     <div class="alert info">Owed to supplier: <b>${money(c.supplierOwed, cur)}</b> · Paid so far: <b>${money(c.totalPaidToSupplier, cur)}</b> · Open: <b>${money(c.supplierOpenToPay, cur)}</b></div>
+    ${(() => {
+      const cps = d.customerPayments.filter((p) => p.status !== 'void').slice().sort((a, b) => String(a.date).localeCompare(String(b.date)) || a.id - b.id);
+      if (!cps.length) return '';
+      const last = cps[cps.length - 1];
+      return `<div class="field"><label>Forwarding which client payment?</label>
+        <select id="sp_fund">${cps.map((p) => `<option value="${p.id}" ${p.id === last.id ? 'selected' : ''}>${fdate(p.date)} — ${money(p.amount_received, cur)}</option>`).join('')}
+        <option value="">Not linked to a client payment</option></select>
+        <div class="hint">Used in the partner report: "of which … was sent to the supplier".</div></div>`;
+    })()}
     <div class="form-row">
       <div class="field"><label>Amount paid to supplier</label><input id="sp_amt" inputmode="decimal" value="${c.supplierOpenToPay > 0 ? c.supplierOpenToPay : ''}" autofocus />
         <div class="hint">Partial payments are fine. This is independent of deliveries.</div></div>
@@ -1174,7 +1411,8 @@ function suppPayModal(deal, d) {
   document.getElementById('sp_cancel').onclick = close;
   document.getElementById('sp_more').onclick = (e) => { e.currentTarget.classList.toggle('open'); document.getElementById('sp_more_b').classList.toggle('hidden'); };
   document.getElementById('sp_save').onclick = async () => {
-    const payload = { amount: v('sp_amt'), date: v('sp_date'), bank_ref: v('sp_ref'), notes: v('sp_notes') };
+    const fund = document.getElementById('sp_fund');
+    const payload = { amount: v('sp_amt'), date: v('sp_date'), bank_ref: v('sp_ref'), notes: v('sp_notes'), funded_by: fund && fund.value ? Number(fund.value) : null };
     try {
       const r = await api('/deals/' + deal.id + '/supplier-payments', { method: 'POST', body: payload });
       close(); ok(r.status === 'pending' ? 'Submitted for approval.' : 'Payment recorded.'); renderDeal();
@@ -1337,8 +1575,18 @@ async function renderApprovals() {
 function approvalCard(a) {
   const s = a.summary;
   const money0 = (n) => money(n || 0);
-  const kind = { customer_payment: 'Customer payment', supplier_payment: 'Supplier payment', supplier_invoice: 'Supplier invoice' }[a.entity_type] || a.entity_type;
-  const details = a.entity_type === 'customer_payment'
+  const kindBase = { customer_payment: 'Client payment', supplier_payment: 'Supplier payment', supplier_invoice: 'Delivery' }[a.entity_type] || a.entity_type;
+  const kind = a.action === 'edit' ? `${kindBase} correction` : a.action === 'void' ? `${kindBase} void request` : `New ${kindBase.toLowerCase()}`;
+  const fieldName = { invoice_number: 'Delivery invoice', delivery_date: 'Delivery date', amount: 'Proforma value', quantity: 'Quantity', notes: 'Notes' };
+  const fmtField = (k, val) => (k === 'amount' ? money0(val) : k === 'delivery_date' ? fdate(val) : esc(val === '' || val == null ? '—' : val));
+  const details = a.action === 'edit'
+    ? `${row('Delivery', esc(s.invoice_number || ''))}${Object.keys(s.changes || {}).map((k) =>
+        row(fieldName[k] || k, `<span class="was">${fmtField(k, (s.before || {})[k])}</span> → <b>${fmtField(k, s.changes[k])}</b>`)).join('')}`
+    : a.action === 'void'
+    ? `${row('Delivery', esc(s.invoice_number || ''))}${row('Proforma value', money0(s.amount))}${row('Reason', esc(s.reason || ''))}`
+    : a.entity_type === 'supplier_invoice' && s.delivery
+    ? `${row('Delivery invoice', esc(s.invoice_number))}${row('Proforma value delivered', money0(s.proforma_allocated != null ? s.proforma_allocated : s.amount))}`
+    : a.entity_type === 'customer_payment'
     ? `${row('Amount', money0(s.amount))}${row('Applied', money0(s.applied))}${row('Our 4%', money0(s.kept))}${row('Supplier 96%', money0(s.reserved))}${s.overpayment > 0 ? row('Overpayment', money0(s.overpayment)) : ''}`
     : a.entity_type === 'supplier_invoice'
       ? `${row('Invoice #', esc(s.invoice_number))}${row('Invoice total', money0(s.amount))}${row('Proforma allocated', money0(s.proforma_allocated))}${row('Prepay credit', money0(s.prepay_credit_applied))}${row('Sales value', money0(s.customer_sales_value))}`
@@ -1508,6 +1756,261 @@ function purgeModal(id, ref) {
   };
 }
 
+/* ================= OVERVIEW — deal cards with mini flow diagrams ================= */
+async function renderOverview() {
+  let data;
+  try { data = await api('/deals'); } catch (e) { return err(e.message); }
+  const cards = data.deals.map((d) => `
+    <div class="ovcard" data-flow="${d.id}" tabindex="0" role="button" aria-label="Open flows for ${esc(d.ref)}">
+      <div class="dcard-top"><span class="dcard-ref">${esc(d.ref)}</span>
+        <span class="pill ${d.status === 'active' ? 'blue' : 'green'}">${esc(d.status)}</span></div>
+      <div class="dcard-title">${esc(d.title)}</div>
+      ${miniDiagram(d)}
+      <div class="ov-stats">
+        <div><span>Paid in</span><b class="green">${pct(d.invoice_total > 0 ? Math.min(100, d.computed.totalReceived / d.invoice_total * 100) : 0)}</b></div>
+        <div><span>Delivered</span><b class="navy">${pct(d.computed.deliveryPct)}</b></div>
+        <div><span>${isAdmin() ? 'Income' : '4% fee paid'}</span><b class="gold">${isAdmin() ? money(d.computed.incomeKept, d.currency) : money(d.computed.feePaid, d.currency)}</b></div>
+      </div>
+    </div>`).join('');
+  const actions = isAdmin() && data.deals.length ? `<button class="btn primary" id="ov-report">Partner report</button>` : '';
+  shell('Overview', `
+    <p class="lead">Every deal as a picture: money flowing in and out, and goods delivered against the proforma. Click a card to see its flows in detail.</p>
+    ${data.deals.length ? `<div class="dcard-grid">${cards}</div>` : `<div class="empty"><h3>No deals yet</h3></div>`}
+  `, actions);
+  document.querySelectorAll('[data-flow]').forEach((c) => {
+    c.onclick = () => go('flow', { id: Number(c.dataset.flow) });
+    c.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); c.click(); } };
+  });
+  const rb = document.getElementById('ov-report');
+  if (rb) rb.onclick = () => partnerReportModal(data.deals);
+}
+
+/* tiny version of the flows for an overview card (native tooltips, so the
+   whole card stays one click target) */
+function miniDiagram(d) {
+  const c = d.computed, cur = d.currency;
+  const sm = (v) => shortMoney(v, cur);
+  const nm = (t, n) => (t.length > n ? t.slice(0, n - 1) + '…' : t);
+  const gp = Math.min(100, c.deliveryPct || 0);
+  return `<svg class="mini-dg" viewBox="0 0 320 168" role="img" aria-label="Money and goods flow">
+    <defs><marker id="mm${d.id}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="dg-ah-money"/></marker>
+    <marker id="mg${d.id}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="dg-ah-goods"/></marker></defs>
+    <text x="52" y="16" text-anchor="middle" class="mini-n">${esc(nm(d.customer_name, 13))}</text>
+    <text x="160" y="16" text-anchor="middle" class="mini-n">Europa</text>
+    <text x="268" y="16" text-anchor="middle" class="mini-n">${esc(nm(d.supplier_name, 13))}</text>
+    <g><title>${esc(d.customer_name)} — paid ${money(c.totalReceived, cur)}</title><circle cx="52" cy="54" r="20" class="mini-c green"/><text x="52" y="59" text-anchor="middle" class="mini-l">C</text></g>
+    <g><title>Europa Pharmaceutical</title><circle cx="160" cy="54" r="20" class="mini-c gold"/><text x="160" y="59" text-anchor="middle" class="mini-l">EP</text></g>
+    <g><title>${esc(d.supplier_name)} — paid ${money(c.totalPaidToSupplier || 0, cur)}</title><circle cx="268" cy="54" r="20" class="mini-c navy"/><text x="268" y="59" text-anchor="middle" class="mini-l">S</text></g>
+    <path d="M74,54 H136" class="dg-money mini" marker-end="url(#mm${d.id})"/>
+    <path d="M182,54 H244" class="dg-money mini" marker-end="url(#mm${d.id})"/>
+    <text x="105" y="44" text-anchor="middle" class="mini-a green">${esc(sm(c.totalReceived))}</text>
+    <text x="213" y="44" text-anchor="middle" class="mini-a navy">${esc(sm(c.totalPaidToSupplier || 0))}</text>
+    <path d="M268,76 V112 Q268,124 256,124 H64 Q52,124 52,112 V80" class="dg-goods mini" marker-end="url(#mg${d.id})"/>
+    <text x="160" y="116" text-anchor="middle" class="mini-a goods">goods ${esc(sm(c.deliveredValue))}</text>
+    <rect x="20" y="146" width="280" height="8" rx="4" class="dg-track"/>
+    <rect x="20" y="146" width="${(280 * gp) / 100}" height="8" rx="4" class="mini-goodsfill"/>
+  </svg>`;
+}
+
+/* ================= FLOW VIEW — one deal, flows only ================= */
+async function renderFlow() {
+  let d;
+  try { d = await api('/deals/' + State.route.id); } catch (e) { return err(e.message); }
+  State.cache.deal = d;
+  State.cache.docs = {}; (d.documents || []).forEach((x) => { State.cache.docs[x.id] = { mime: x.mime, name: x.original_name }; });
+  const deal = d.deal, c = d.computed, cur = deal.currency;
+  const posted = (arr) => (arr || []).filter((x) => x.status === 'posted');
+  const events = [
+    ...posted(d.customerPayments).map((p) => ({ date: p.date, kind: 'in', text: `Payment in from ${deal.customer_name}`, amt: Number(p.amount_received) })),
+    ...posted(d.supplierPayments).map((p) => ({ date: p.date, kind: 'out', text: `Payment out to ${deal.supplier_name}`, amt: Number(p.amount) })),
+    ...posted(d.supplierInvoices).map((x) => ({ date: x.delivery_date || x.issue_date, kind: 'goods', text: `Delivery ${x.invoice_number}`, amt: Number(x.proforma_allocated) || 0 })),
+  ].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+  const last = (kind) => { const e = events.filter((x) => x.kind === kind); return e.length ? fdate(e[e.length - 1].date) : '—'; };
+  const sign = { in: '+', out: '−', goods: '' };
+  const label = { in: 'Money in', out: 'Money out', goods: 'Goods' };
+
+  const actions = `
+    <button class="btn" id="fl-back">← Overview</button>
+    <button class="btn" id="fl-open">Open full deal</button>
+    ${isAdmin() ? `<button class="btn primary" id="fl-report">Partner report</button>` : ''}`;
+  shell(deal.ref, `
+    <div class="deal-head"><h2>${esc(deal.title)}</h2>
+      <span class="pill ${deal.status === 'active' ? 'blue' : deal.status === 'completed' ? 'green' : 'gray'}">${esc(deal.status)}</span></div>
+    <div class="parties muted" style="margin-bottom:14px">${esc(deal.customer_name)} &nbsp;·&nbsp; ${esc(deal.supplier_name)}</div>
+    <div class="info-strip">
+      <div><span>Deal value</span><b>${money(deal.invoice_total, cur)}</b></div>
+      <div><span>Supplier proforma</span><b>${money(deal.proforma_total, cur)}</b></div>
+      <div><span>Opened</span><b>${fdate(deal.created_at)}</b></div>
+      <div><span>Last payment in</span><b>${last('in')}</b></div>
+      <div><span>Last payment out</span><b>${last('out')}</b></div>
+      <div><span>Last delivery</span><b>${last('goods')}</b></div>
+      <div><span>Next</span><b class="next">${esc(d.nextAction.label)}</b></div>
+    </div>
+    ${dealDiagram(d)}
+    ${goodsDiagram(d)}
+    ${card('Timeline', events.length ? `<div class="tl">${events.map((e) => `
+      <div class="tl-row ${e.kind}">
+        <div class="tl-date">${fdate(e.date)}</div>
+        <div class="tl-dot"></div>
+        <div class="tl-text"><span class="tl-kind">${label[e.kind]}</span> ${esc(e.text)}</div>
+        <div class="tl-amt">${sign[e.kind]} ${money(e.amt, cur)}</div>
+      </div>`).join('')}</div>` : '<div class="empty small">Nothing has happened on this deal yet.</div>')}
+  `, actions);
+  document.getElementById('fl-back').onclick = () => go('overview');
+  document.getElementById('fl-open').onclick = () => go('deal', { id: deal.id });
+  const rb = document.getElementById('fl-report');
+  if (rb) rb.onclick = () => partnerReportModal([{ id: deal.id, ref: deal.ref, title: deal.title, customer_name: deal.customer_name }], [deal.id]);
+  wireDiagram();
+}
+
+/* ================= PARTNER REPORT (deterministic, Russian) =================
+   Builds the per-deal summary sent to the partner, from live deal data only.
+   No AI involved: the same data always produces the same text. */
+const RU_MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+const RU_ORD = ['Первая', 'Вторая', 'Третья', 'Четвёртая', 'Пятая', 'Шестая', 'Седьмая', 'Восьмая', 'Девятая', 'Десятая'];
+const RU_WORD = ['ноль', 'одна', 'две', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять', 'десять'];
+function ruNum(v) {
+  const cents = Math.round(Math.abs(Number(v) || 0) * 100);
+  const int = Math.floor(cents / 100), dec = cents % 100;
+  const s = String(int).replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0');
+  return ((Number(v) || 0) < 0 ? '−' : '') + s + (dec ? ',' + String(dec).padStart(2, '0') : '');
+}
+function ruDate(s) {
+  if (!s) return 'без даты';
+  const [y, mo, d] = String(s).slice(0, 10).split('-').map(Number);
+  return `${d} ${RU_MONTHS[mo - 1]}` + (y !== new Date().getFullYear() ? ` ${y} г.` : '');
+}
+function ruPlural(n, one, few, many) {
+  const a = n % 10, b = n % 100;
+  if (a === 1 && b !== 11) return one;
+  if (a >= 2 && a <= 4 && (b < 10 || b >= 20)) return few;
+  return many;
+}
+const ruCount = (n) => (n <= 10 ? RU_WORD[n] : String(n));
+const ruOrd = (k) => RU_ORD[k - 1] || `${k}-я`;
+
+/* Which client payment each supplier payment forwarded. Uses the explicit link
+   when it was recorded; otherwise the latest client payment on or before the
+   supplier payment's date (that is how payments are normally forwarded). */
+function forwardingByPayment(cps, sps) {
+  const fwd = new Map(cps.map((p) => [p.id, 0]));
+  let unlinked = 0;
+  for (const sp of sps) {
+    let target = sp.funded_by && fwd.has(sp.funded_by) ? sp.funded_by : null;
+    if (!target) {
+      const before = cps.filter((p) => String(p.date || '') <= String(sp.date || ''));
+      target = before.length ? before[before.length - 1].id : null;
+    }
+    if (target) fwd.set(target, fwd.get(target) + Number(sp.amount || 0));
+    else unlinked += Number(sp.amount || 0);
+  }
+  return { fwd, unlinked };
+}
+
+function partnerReportSection(n, d, opts) {
+  const deal = d.deal, c = d.computed;
+  const byDate = (k) => (a, b) => String(a[k] || '').localeCompare(String(b[k] || '')) || a.id - b.id;
+  const posted = (arr) => (arr || []).filter((x) => x.status === 'posted');
+  const cps = posted(d.customerPayments).sort(byDate('date'));
+  const sps = posted(d.supplierPayments).sort(byDate('date'));
+  const dels = posted(d.supplierInvoices).map((x) => ({ ...x, _d: x.delivery_date || x.issue_date })).sort(byDate('_d'));
+  const label = (opts.supplier || 'Латвия').trim();
+  const latvia = /^латви/i.test(label);
+  const to = latvia ? 'поставщику (Латвия)' : `поставщику (${label})`;
+  const L = [];
+
+  L.push(`${n} Сделка${opts.showRef ? ` (${deal.ref})` : ''}`);
+  L.push('');
+  L.push(`Инвойс со стороны Europa Pharmaceuticals вам был выслан на ${ruNum(deal.invoice_total)} €. ` +
+    (latvia ? `Латыши нам высылали на ${ruNum(deal.proforma_total)} €.` : `Поставщик (${label}) выслал нам инвойс на ${ruNum(deal.proforma_total)} €.`));
+  L.push('');
+  if (!dels.length) L.push('Поставок пока не было.');
+  else {
+    L.push(dels.length === 1 ? 'Всего была одна поставка:' : `Всего было ${ruCount(dels.length)} ${ruPlural(dels.length, 'поставка', 'поставки', 'поставок')}:`);
+    L.push('');
+    dels.forEach((x, i) => L.push(`${i + 1}. ${ruDate(x._d)} — на сумму ${ruNum(x.proforma_allocated || 0)} €`));
+  }
+  L.push('');
+  if (c.deliveryOutstanding > 0.005) L.push(`Остается открытый баланс по поставкам: ${ruNum(c.deliveryOutstanding)} €.`);
+  else if (c.overDelivery > 0.005) L.push(`Поставлено сверх проформы на ${ruNum(c.overDelivery)} €.`);
+  else L.push('Все товары по проформе поставлены.');
+  if (opts.askClose) L.push('Прошу подтвердить, закрыта ли сделка. На основании этого нам нужно написать письма насчет открытых балансов.');
+  L.push('');
+  L.push('С финансовой точки зрения:');
+  const { fwd, unlinked } = forwardingByPayment(cps, sps);
+  if (!cps.length) L.push('С вашей стороны оплат пока не было.');
+  else {
+    L.push(cps.length === 1 ? 'С вашей стороны была сделана одна оплата:' : `С вашей стороны было сделано ${ruCount(cps.length)} ${ruPlural(cps.length, 'оплата', 'оплаты', 'оплат')}:`);
+    L.push('');
+    cps.forEach((p, i) => {
+      const amt = Number(p.amount_received) || 0, sent = fwd.get(p.id) || 0;
+      const tail = sent >= amt - 0.005 ? `которая полностью была выслана ${to}.`
+        : sent > 0.005 ? `из которых ${to} было выслано ${ruNum(sent)} €.`
+          : `из нее ${to} пока ничего не было выслано.`;
+      L.push(`${i + 1}. ${cps.length === 1 ? 'Оплата' : ruOrd(i + 1)} — ${ruNum(amt)} €, ${tail}`);
+    });
+  }
+  if (unlinked > 0.005) { L.push(''); L.push(`Кроме того, ${to} было выслано ${ruNum(unlinked)} € до получения оплаты с вашей стороны.`); }
+
+  const paidOut = sps.reduce((a, p) => a + Number(p.amount || 0), 0);
+  const weOwe = Math.max(0, Number(deal.proforma_total) - paidOut);
+  const weOver = Math.max(0, paidOut - Number(deal.proforma_total));
+  const theyOwe = c.customerBalance || 0;
+  const theyOver = c.customerOverpayment || 0;
+  if (weOwe > 0.005 || theyOwe > 0.005 || weOver > 0.005 || theyOver > 0.005) {
+    L.push('');
+    L.push('Открытый баланс:');
+    if (weOwe > 0.005) L.push(`${ruNum(weOwe)} € — у нас к ${latvia ? 'латышам' : `поставщику (${label})`}.`);
+    if (weOver > 0.005) L.push(`${ruNum(weOver)} € — наша переплата ${latvia ? 'латышам' : `поставщику (${label})`}.`);
+    if (theyOwe > 0.005) L.push(`${ruNum(theyOwe)} € — у вас к нам.`);
+    if (theyOver > 0.005) L.push(`${ruNum(theyOver)} € — ваша переплата.`);
+  }
+  return L.join('\n');
+}
+
+async function partnerReportModal(deals, preselect) {
+  const sel = new Set(preselect || deals.filter((d) => d.status !== 'completed').map((d) => d.id));
+  const cache = {};
+  const body = `
+    <div class="rep-opts">
+      <div class="field"><label>Deals to include</label>
+        <div class="rep-list">${deals.slice().sort((a, b) => a.id - b.id).map((d) => `
+          <label class="rep-item"><input type="checkbox" data-rdeal="${d.id}" ${sel.has(d.id) ? 'checked' : ''}/>
+            <span><b>${esc(d.ref)}</b> — ${esc(d.title)} <span class="meta">· ${esc(d.customer_name)}</span></span></label>`).join('')}</div></div>
+      <div class="form-row">
+        <div class="field"><label>Supplier in the text</label><input id="rp_sup" value="Латвия" />
+          <div class="hint">"Латвия" gives "Латыши нам высылали…"; any other name is written out.</div></div>
+        <div class="field"><label>Options</label>
+          <label class="rep-item"><input type="checkbox" id="rp_ref" checked/> <span>Show deal reference</span></label>
+          <label class="rep-item"><input type="checkbox" id="rp_close"/> <span>Ask partner to confirm the deal is closed</span></label></div>
+      </div>
+    </div>
+    <div class="field"><label>Report — edit freely before copying</label>
+      <textarea id="rp_text" class="rep-text" spellcheck="false">Preparing…</textarea></div>
+    <div id="rp_err" class="alert err hidden"></div>`;
+  const close = openModal('Partner report', body,
+    `<button class="btn" id="rp_cancel">Close</button><button class="btn primary" id="rp_copy">Copy text</button>`, { wide: true });
+  const ta = document.getElementById('rp_text');
+  const build = async () => {
+    const ids = [...document.querySelectorAll('[data-rdeal]')].filter((x) => x.checked).map((x) => Number(x.dataset.rdeal)).sort((a, b) => a - b); // order deals were opened
+    if (!ids.length) { ta.value = 'Select at least one deal.'; return; }
+    try {
+      for (const id of ids) if (!cache[id]) cache[id] = await api('/deals/' + id);
+      const opts = { supplier: v('rp_sup'), showRef: document.getElementById('rp_ref').checked, askClose: document.getElementById('rp_close').checked };
+      ta.value = ids.map((id, i) => partnerReportSection(i + 1, cache[id], opts)).join('\n\n\n');
+    } catch (e) { showErr('rp_err', e.message); }
+  };
+  document.querySelectorAll('[data-rdeal], #rp_ref, #rp_close').forEach((x) => (x.onchange = build));
+  document.getElementById('rp_sup').oninput = build;
+  document.getElementById('rp_cancel').onclick = close;
+  document.getElementById('rp_copy').onclick = async () => {
+    ta.select();
+    try { await navigator.clipboard.writeText(ta.value); ok('Report copied.'); }
+    catch { document.execCommand('copy'); ok('Report copied.'); }
+  };
+  build();
+}
+
 /* ================= NOTIFICATIONS ================= */
 async function refreshBell() {
   try {
@@ -1601,6 +2104,8 @@ function render() {
   if (!State.user) return renderLogin();
   const r = State.route.name;
   if (r === 'deals') return renderDeals();
+  if (r === 'overview') return renderOverview();
+  if (r === 'flow') return renderFlow();
   if (r === 'reports') return renderReports();
   if (r === 'deal') return renderDeal();
   if (r === 'approvals') return isAdmin() ? renderApprovals() : go('deals');

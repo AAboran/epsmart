@@ -425,12 +425,19 @@ app.post('/api/deals/:id/supplier-payments', requireAuth, requireRole('admin'), 
   const amount = num(b.amount);
   if (!(amount > 0)) return res.status(400).json({ error: 'Enter an amount greater than zero.' });
   if (!b.date) return res.status(400).json({ error: 'A payment date is required.' });
+  // Optional link: which client payment this forwards (used by the partner report).
+  let fundedBy = null;
+  if (b.funded_by) {
+    const cp = (await query("SELECT id FROM customer_payments WHERE id=$1 AND deal_id=$2 AND status<>'void'", [Number(b.funded_by), d.id])).rows[0];
+    if (!cp) return res.status(400).json({ error: 'The selected client payment does not belong to this deal.' });
+    fundedBy = cp.id;
+  }
   const status = entersLedger(req.user) ? 'posted' : 'pending';
   if (!entersLedger(req.user) && await duplicatePending(d.id, 'supplier_payment', 'create', amount, b.date))
     return res.status(409).json({ error: 'An identical submission is already awaiting approval.' });
   const id = (await query(
-    'INSERT INTO supplier_payments (deal_id,invoice_id,date,amount,is_prepayment,bank_ref,notes,status,created_by) VALUES ($1,NULL,$2,$3,0,$4,$5,$6,$7) RETURNING id',
-    [d.id, b.date, amount, b.bank_ref || null, b.notes || null, status, req.user.id]
+    'INSERT INTO supplier_payments (deal_id,invoice_id,date,amount,is_prepayment,bank_ref,notes,status,created_by,funded_by) VALUES ($1,NULL,$2,$3,0,$4,$5,$6,$7,$8) RETURNING id',
+    [d.id, b.date, amount, b.bank_ref || null, b.notes || null, status, req.user.id, fundedBy]
   )).rows[0].id;
   const summary = { amount, date: b.date };
   await notify(['office', 'visitor'], d.id, 'Payment to supplier recorded',
@@ -475,12 +482,24 @@ function resolveApproval(approve) {
     const a = (await query("SELECT * FROM approvals WHERE id=$1 AND status='pending'", [Number(req.params.id)])).rows[0];
     if (!a) return res.status(404).json({ error: 'Approval not found or already resolved.' });
     const table = VOID_TABLES[a.entity_type];
-    if (table && a.entity_id) await query(`UPDATE ${table} SET status=$1 WHERE id=$2`, [approve ? 'posted' : 'void', a.entity_id]);
+    const summary = (() => { try { return JSON.parse(a.summary); } catch { return {}; } })();
+    if (a.action === 'edit') {
+      // A requested correction: apply it only when approved; the entry stays as-is otherwise.
+      if (approve && a.entity_type === 'supplier_invoice') {
+        const row = (await query('SELECT * FROM supplier_invoices WHERE id=$1', [a.entity_id])).rows[0];
+        if (row && row.status !== 'void') await applyDeliveryEdit(row, summary.changes || {});
+      }
+    } else if (a.action === 'void') {
+      if (approve && table && a.entity_id)
+        await query(`UPDATE ${table} SET status='void', void_reason=$1 WHERE id=$2`, [summary.reason || 'Voided on request', a.entity_id]);
+    } else if (table && a.entity_id) {
+      await query(`UPDATE ${table} SET status=$1 WHERE id=$2`, [approve ? 'posted' : 'void', a.entity_id]);
+    }
     await query("UPDATE approvals SET status=$1, resolved_by=$2, resolved_at=NOW() WHERE id=$3", [approve ? 'approved' : 'rejected', req.user.id, a.id]);
     await audit(a.deal_id, req.user, approve ? 'approve' : 'reject', a.entity_type, a.entity_id, { approvalId: a.id });
     await query('INSERT INTO notifications (user_id,deal_id,title,body,kind) VALUES ($1,$2,$3,$4,$5)',
       [a.requested_by, a.deal_id, approve ? 'Your submission was approved' : 'Your submission was rejected',
-       `${String(a.entity_type).replace(/_/g, ' ')} reviewed by ${req.user.name}.`, approve ? 'ok' : 'warn']);
+       `${a.action === 'edit' ? 'Correction to ' : a.action === 'void' ? 'Void request for ' : ''}${a.entity_type === 'supplier_invoice' ? 'delivery' : String(a.entity_type).replace(/_/g, ' ')}${summary.invoice_number ? ' ' + summary.invoice_number : ''} reviewed by ${req.user.name}.`, approve ? 'ok' : 'warn']);
     res.json({ ok: true });
   });
 }
@@ -518,6 +537,99 @@ app.get('/api/documents/:id/file', requireAuth, wrap(async (req, res) => {
   res.setHeader('Content-Type', doc.mime);
   res.setHeader('Content-Disposition', `inline; filename="${String(doc.original_name).replace(/"/g, '')}"`);
   res.send(doc.content); // bytea -> Buffer
+}));
+
+// ---------- fix or void a delivery ----------
+// Administrators change deliveries directly. Anyone else creates a request that
+// an administrator approves; nothing changes until it is approved.
+const DELIVERY_FIELDS = ['invoice_number', 'delivery_date', 'amount', 'quantity', 'notes'];
+function deliverySnapshot(row) {
+  return {
+    invoice_number: row.invoice_number || '', delivery_date: row.delivery_date || '',
+    amount: Number(row.proforma_allocated) || 0, quantity: row.quantity || '', notes: row.notes || '',
+  };
+}
+async function applyDeliveryEdit(row, changes) {
+  const deal = await getDeal(row.deal_id);
+  const ratio = Number(deal.proforma_total) > 0 ? Number(deal.invoice_total) / Number(deal.proforma_total) : 1;
+  const cols = [], vals = [];
+  const set = (c, v) => { cols.push(c + '=$' + (vals.length + 1)); vals.push(v); };
+  if (changes.invoice_number != null) set('invoice_number', String(changes.invoice_number).trim());
+  if (changes.delivery_date != null) { set('delivery_date', changes.delivery_date || null); set('issue_date', changes.delivery_date || null); }
+  if (changes.amount != null) {
+    const v = finance.round2(Number(changes.amount));
+    set('proforma_allocated', v); set('customer_sales_value', finance.round2(v * ratio));
+  }
+  if (changes.quantity != null) set('quantity', changes.quantity || null);
+  if (changes.notes != null) set('notes', changes.notes || null);
+  if (!cols.length) return;
+  vals.push(row.id);
+  await query(`UPDATE supplier_invoices SET ${cols.join(', ')} WHERE id=$${vals.length}`, vals);
+}
+async function pendingChangeFor(rowId) {
+  return (await query(
+    "SELECT id FROM approvals WHERE entity_type='supplier_invoice' AND entity_id=$1 AND action IN ('edit','void') AND status='pending'",
+    [rowId])).rows[0];
+}
+
+app.patch('/api/deliveries/:id', requireAuth, requireRole('admin', 'office'), wrap(async (req, res) => {
+  const row = (await query('SELECT * FROM supplier_invoices WHERE id=$1', [Number(req.params.id)])).rows[0];
+  if (!row) return res.status(404).json({ error: 'Delivery not found.' });
+  if (row.status === 'void') return res.status(409).json({ error: 'This delivery has been voided and cannot be changed.' });
+  const deal = await getDeal(row.deal_id);
+  if (deal.status !== 'active') return res.status(409).json({ error: 'This deal is not open for changes.' });
+
+  const b = req.body || {};
+  const before = deliverySnapshot(row);
+  const changes = {};
+  if (b.invoice_number != null) {
+    if (!String(b.invoice_number).trim()) return res.status(400).json({ error: 'The delivery invoice number cannot be empty.' });
+    if (String(b.invoice_number).trim() !== before.invoice_number) changes.invoice_number = String(b.invoice_number).trim();
+  }
+  if (b.delivery_date != null && b.delivery_date !== before.delivery_date) changes.delivery_date = b.delivery_date;
+  if (b.amount != null && String(b.amount).trim() !== '') {
+    const v = num(b.amount);
+    if (!(v > 0)) return res.status(400).json({ error: 'The delivered value must be greater than zero.' });
+    if (Math.abs(v - before.amount) > eps) changes.amount = v;
+  }
+  if (b.quantity != null && b.quantity !== before.quantity) changes.quantity = b.quantity;
+  if (b.notes != null && b.notes !== before.notes) changes.notes = b.notes;
+  if (!Object.keys(changes).length) return res.status(400).json({ error: 'Nothing was changed.' });
+
+  if (req.user.role === 'admin') {
+    await applyDeliveryEdit(row, changes);
+    await audit(deal.id, req.user, 'edit_delivery', 'supplier_invoice', row.id, { before, changes });
+    await notify(['office'], deal.id, 'Delivery corrected', `${deal.ref}: delivery ${before.invoice_number} was corrected.`, 'info', req.user.id);
+    return res.json({ status: 'applied' });
+  }
+  if (await pendingChangeFor(row.id)) return res.status(409).json({ error: 'A change to this delivery is already awaiting approval.' });
+  await createApproval(deal.id, 'supplier_invoice', row.id, 'edit',
+    { invoice_number: before.invoice_number, changes, before, amount: changes.amount != null ? changes.amount : before.amount,
+      date: changes.delivery_date != null ? changes.delivery_date : before.delivery_date }, req.user);
+  await audit(deal.id, req.user, 'propose_delivery_edit', 'supplier_invoice', row.id, { before, changes });
+  res.json({ status: 'pending' });
+}));
+
+app.post('/api/deliveries/:id/void', requireAuth, requireRole('admin', 'office'), wrap(async (req, res) => {
+  const row = (await query('SELECT * FROM supplier_invoices WHERE id=$1', [Number(req.params.id)])).rows[0];
+  if (!row) return res.status(404).json({ error: 'Delivery not found.' });
+  if (row.status === 'void') return res.status(409).json({ error: 'This delivery is already void.' });
+  const deal = await getDeal(row.deal_id);
+  if (deal.status !== 'active') return res.status(409).json({ error: 'This deal is not open for changes.' });
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!reason) return res.status(400).json({ error: 'Give a reason for voiding this delivery.' });
+
+  if (req.user.role === 'admin') {
+    await query("UPDATE supplier_invoices SET status='void', void_reason=$1 WHERE id=$2", [reason, row.id]);
+    await audit(deal.id, req.user, 'void_delivery', 'supplier_invoice', row.id, { reason, invoice_number: row.invoice_number });
+    await notify(['office'], deal.id, 'Delivery voided', `${deal.ref}: delivery ${row.invoice_number} was voided (${reason}).`, 'warn', req.user.id);
+    return res.json({ status: 'applied' });
+  }
+  if (await pendingChangeFor(row.id)) return res.status(409).json({ error: 'A change to this delivery is already awaiting approval.' });
+  await createApproval(deal.id, 'supplier_invoice', row.id, 'void',
+    { invoice_number: row.invoice_number, reason, amount: Number(row.proforma_allocated) || 0, date: row.delivery_date || '' }, req.user);
+  await audit(deal.id, req.user, 'propose_delivery_void', 'supplier_invoice', row.id, { reason });
+  res.json({ status: 'pending' });
 }));
 
 // ---------- notifications ----------

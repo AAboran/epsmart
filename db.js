@@ -177,6 +177,7 @@ const MIGRATIONS = `
 ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS pay_status TEXT NOT NULL DEFAULT 'unpaid';
 ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS paid_date TEXT;
 ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS planned_pay_date TEXT;
+ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS funded_by INTEGER;
 `;
 
 let readyPromise = null;
