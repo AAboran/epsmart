@@ -188,6 +188,7 @@ app.get('/api/deals', requireAuth, wrap(async (req, res) => {
       currency: d.currency, status: d.status, proforma_total: d.proforma_total, invoice_total: d.invoice_total,
       customer_prepay_required: d.customer_prepay_required,
       closure_state: d.closure_state, closure_balance: d.closure_balance, closure_option: d.closure_option,
+      proforma_number: d.proforma_number, invoice_number: d.invoice_number,
       completed_at: d.completed_at, closed_at: d.closed_at,
       computed: scrubComputed(computed, req.user), nextAction,
     });
@@ -242,11 +243,12 @@ app.post('/api/deals', requireAuth, requireRole('admin', 'office'), wrap(async (
     : finance.round2(proforma * (1 + rate));
   const id = (await query(
     `INSERT INTO deals (ref,title,customer_name,supplier_name,currency,proforma_total,invoice_total,
-       customer_prepay_required,supplier_prepay_required,commission_rate,notes,created_by,status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active') RETURNING id`,
+       customer_prepay_required,supplier_prepay_required,commission_rate,notes,created_by,status,proforma_number,invoice_number)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active',$13,$14) RETURNING id`,
     [String(b.ref).trim(), String(b.title).trim(), String(b.customer_name).trim(), String(b.supplier_name).trim(),
       (b.currency || 'EUR').trim(), proforma, invoiceTotal, num(b.customer_prepay_required),
-      num(b.supplier_prepay_required), rate, b.notes || null, req.user.id]
+      num(b.supplier_prepay_required), rate, b.notes || null, req.user.id,
+      b.proforma_number ? String(b.proforma_number).trim() : null, b.invoice_number ? String(b.invoice_number).trim() : null]
   )).rows[0].id;
   await audit(id, req.user, 'create_deal', 'deal', id, { ref: b.ref });
   res.json({ id });
@@ -255,15 +257,30 @@ app.post('/api/deals', requireAuth, requireRole('admin', 'office'), wrap(async (
 app.patch('/api/deals/:id', requireAuth, requireRole('admin'), wrap(async (req, res) => {
   const d = await getDeal(Number(req.params.id));
   if (!d) return res.status(404).json({ error: 'Deal not found.' });
-  if (d.status !== 'active') return res.status(409).json({ error: 'Only active deals can be edited. Reopen it first.' });
   const b = req.body || {};
+  if (['deleted', 'purged'].includes(d.status)) return res.status(409).json({ error: 'Deleted deals cannot be edited.' });
+  const FINANCIAL = ['invoice_total', 'proforma_total', 'customer_prepay_required', 'supplier_prepay_required', 'commission_rate'];
+  if (d.status !== 'active' && FINANCIAL.some((k) => b[k] != null))
+    return res.status(409).json({ error: 'Amounts can only be changed on active deals. Names and invoice numbers can be edited any time.' });
   const { computed } = await computeFor(d);
   const hasFinancialActivity = computed.totalApplied > eps || computed.supplierInvoicesGross > eps || computed.supplierPrepaySent > eps;
   const hasCustomerPayments = computed.totalApplied > eps;
 
   const cols = [], vals = [];
   const set = (c, v) => { cols.push(c + '=$' + (vals.length + 1)); vals.push(v); };
-  if (b.title != null) set('title', String(b.title).trim());
+  if (b.title != null) {
+    if (!String(b.title).trim()) return res.status(400).json({ error: 'The deal name cannot be empty.' });
+    set('title', String(b.title).trim());
+  }
+  if (b.ref != null && String(b.ref).trim() !== d.ref) {
+    const ref = String(b.ref).trim();
+    if (!ref) return res.status(400).json({ error: 'The deal reference cannot be empty.' });
+    if ((await query('SELECT 1 FROM deals WHERE ref=$1 AND id<>$2', [ref, d.id])).rows[0])
+      return res.status(409).json({ error: `Another deal already uses the reference "${ref}".` });
+    set('ref', ref);
+  }
+  if (b.proforma_number != null) set('proforma_number', String(b.proforma_number).trim() || null);
+  if (b.invoice_number != null) set('invoice_number', String(b.invoice_number).trim() || null);
   if (b.customer_name != null) set('customer_name', String(b.customer_name).trim());
   if (b.supplier_name != null) set('supplier_name', String(b.supplier_name).trim());
   if (b.notes != null) set('notes', String(b.notes));

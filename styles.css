@@ -839,3 +839,87 @@ td .btn.sm + .btn.sm { margin-left: 4px; }
 .letter-alert a { font-weight: 700; margin-left: 6px; }
 .stat .value.amber { color: var(--amber); }
 .stat .value.green { color: var(--green); }
+
+/* ============================================================
+   CARD EDITING, INVOICE NUMBERS, SEARCH
+   ============================================================ */
+.dcard-top-r { display: inline-flex; align-items: center; gap: 6px; }
+.card-edit { width: 34px; height: 34px; min-width: 34px; border-radius: 9px; border: 1px solid var(--border-strong);
+  background: #fff; color: var(--navy); font-size: 15px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.card-edit:hover { border-color: var(--gold); background: var(--gold-soft); color: var(--gold); }
+.card-edit:focus-visible { outline: 3px solid rgba(201,164,65,0.5); outline-offset: 1px; }
+.inv-nums { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.inv-nums span { font-size: 12px; font-weight: 650; color: var(--navy); background: #f2f5fa; border: 1px solid #dfe6f0;
+  border-radius: 7px; padding: 3px 8px; font-variant-numeric: tabular-nums; }
+.inv-nums em { font-style: normal; font-weight: 600; color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 4px; }
+.inv-nums.empty { font-size: 12px; color: var(--muted); font-style: italic; }
+.deal-head + .parties + .inv-nums, .parties + .inv-nums { margin: 0 0 12px; }
+.deal-search { margin: 0 0 16px; max-width: 560px; }
+.deal-search input { min-height: 44px; padding-left: 14px; border-radius: 10px; }
+
+/* ============================================================
+   ROYAL PALETTE — royal blue + luxury royal gold
+   (sidebar, navigation and buttons; darker gold stays for text on white)
+   ============================================================ */
+:root {
+  --royal-900: #0f1f5c; --royal-800: #162b7a; --royal-700: #1d3a99; --royal-600: #2648b8; --royal-500: #3260d6;
+  --rgold-300: #f3dc8f; --rgold-400: #e6c460; --rgold-500: #d4af37; --rgold-600: #b8912a; --rgold-700: #8f6d17;
+}
+
+/* sidebar */
+.sidebar {
+  background:
+    radial-gradient(120% 55% at 50% -8%, rgba(243,220,143,0.18), transparent 62%),
+    linear-gradient(180deg, #2142a8 0%, #1a3488 48%, #12256a 100%);
+  border-right: 3px solid transparent;
+  border-image: linear-gradient(180deg, var(--rgold-300), var(--rgold-500) 45%, var(--rgold-600)) 1;
+  box-shadow: 4px 0 18px -10px rgba(18,37,106,0.6);
+  color: #dfe7fb;
+}
+.brand::after { background: linear-gradient(90deg, transparent, var(--rgold-400), transparent); }
+.brand-tx { color: #f7e9bd; }
+.brand-tx span { color: #b9c8ef; }
+.brand-icon { box-shadow: 0 0 0 1.5px var(--rgold-400), 0 4px 12px rgba(0,0,0,0.35); }
+.nav-item { color: #dfe7fb; }
+.nav-item:hover { background: rgba(243,220,143,0.14); color: #fff; }
+.nav-item.active, .nav-item.active:hover {
+  background: linear-gradient(180deg, var(--rgold-300) 0%, var(--rgold-500) 55%, var(--rgold-600) 100%);
+  color: #2a1d00; font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.55), 0 3px 12px rgba(212,175,55,0.45);
+}
+.nav-user { border-top-color: rgba(243,220,143,0.22); color: #eef2fc; }
+.nav-user .role, .boran span, .verline { color: #b9c8ef; }
+.boran { border-top-color: rgba(243,220,143,0.22); }
+.boran b, .verline b { color: var(--rgold-300); }
+
+/* buttons */
+.btn.primary {
+  background: linear-gradient(180deg, var(--royal-500) 0%, var(--royal-700) 100%);
+  border: 1px solid var(--rgold-600); color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.18), 0 2px 8px rgba(29,58,153,0.28);
+}
+.btn.primary:hover { background: linear-gradient(180deg, #3b6ae0 0%, var(--royal-600) 100%); border-color: var(--rgold-500); }
+.btn.primary:focus-visible, .btn:focus-visible { outline: 3px solid rgba(212,175,55,0.55); outline-offset: 2px; }
+.btn:not(.primary):not(.danger):hover { border-color: var(--rgold-500); background: #fffcf2; }
+.big-btn.primary { box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), 0 6px 18px -6px rgba(29,58,153,0.55); }
+.login-card .btn.primary {
+  background: linear-gradient(180deg, var(--rgold-300) 0%, var(--rgold-500) 55%, var(--rgold-600) 100%);
+  border-color: var(--rgold-700); color: #2a1d00;
+}
+.login-card .btn.primary:hover { background: linear-gradient(180deg, #f7e4a3 0%, var(--rgold-400) 55%, var(--rgold-500) 100%); }
+
+/* small royal touches elsewhere */
+.dcard::before, .ovcard::before { background: linear-gradient(90deg, var(--royal-700), var(--rgold-500)); }
+.dcard:hover, .ovcard:hover, .dcard:focus-visible, .ovcard:focus-visible { border-color: var(--rgold-500); }
+.topbar { border-bottom: 1px solid #e9dcb4; }
+.card-edit:hover { border-color: var(--rgold-500); }
+
+/* order toggle next to the search box */
+.list-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 16px; }
+.list-tools .deal-search { margin: 0; flex: 1 1 320px; }
+.sort-toggle { display: inline-flex; align-items: center; border: 1px solid var(--border-strong); border-radius: 10px; overflow: hidden; background: #fff; }
+.sort-toggle span { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 700; padding: 0 10px; }
+.sort-toggle button { border: 0; border-left: 1px solid var(--border); background: none; min-height: 42px; padding: 0 14px;
+  font-size: 13px; font-weight: 600; color: var(--navy); cursor: pointer; }
+.sort-toggle button.on { background: linear-gradient(180deg, var(--royal-500), var(--royal-700)); color: #fff; }
+.sort-toggle button:focus-visible { outline: 3px solid rgba(212,175,55,0.55); outline-offset: -3px; }

@@ -183,6 +183,8 @@ ALTER TABLE deals ADD COLUMN IF NOT EXISTS closure_balance NUMERIC;
 ALTER TABLE deals ADD COLUMN IF NOT EXISTS closure_option TEXT;
 ALTER TABLE deals ADD COLUMN IF NOT EXISTS closure_note TEXT;
 ALTER TABLE deals ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+ALTER TABLE deals ADD COLUMN IF NOT EXISTS proforma_number TEXT;
+ALTER TABLE deals ADD COLUMN IF NOT EXISTS invoice_number TEXT;
 `;
 
 let readyPromise = null;

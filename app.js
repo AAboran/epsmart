@@ -167,7 +167,7 @@ function shell(title, bodyHtml, actionsHtml = '') {
           <div style="flex:1"></div>
           <div class="zoomctl" role="group" aria-label="Page zoom">
             <button type="button" id="zm-out" aria-label="Zoom out" title="Zoom out">−</button>
-            <button type="button" id="zm-reset" aria-label="Reset zoom" title="Reset to 100%">${Math.round(getZoom() * 100)}%</button>
+            <button type="button" id="zm-reset" aria-label="Reset zoom" title="Back to the standard size">${Math.round(getZoom() * 100)}%</button>
             <button type="button" id="zm-in" aria-label="Zoom in" title="Zoom in">+</button>
           </div>
           <button class="bell" id="bell" aria-label="Notifications">🔔<span class="bell-dot hidden" id="bell-dot"></span></button>
@@ -182,7 +182,8 @@ function shell(title, bodyHtml, actionsHtml = '') {
   document.getElementById('bell').onclick = notificationsModal;
   document.getElementById('zm-out').onclick = () => stepZoom(-1);
   document.getElementById('zm-in').onclick = () => stepZoom(1);
-  document.getElementById('zm-reset').onclick = () => setZoom(1);
+  document.getElementById('zm-reset').onclick = () => setZoom(ZOOM_DEFAULT);
+  applyZoom(getZoom());
   refreshBell();
   fetch('/version').then((r) => r.json()).then((j) => {
     const el = document.getElementById('buildstamp');
@@ -203,7 +204,7 @@ async function renderDeals() {
   const p = data.portfolio;
   State._dealList = data.deals;
   State._awaitingLetters = data.deals.filter((d) => d.closure_state === 'awaiting_letter').length;
-  const activeDeals = data.deals.filter((d) => d.status === 'active');
+  const activeDeals = byAdded(data.deals.filter((d) => d.status === 'active'));
   const cards = activeDeals.map(dealCard).join('');
   const actions = can('admin', 'office') ? `<button class="btn primary" id="newdeal">New deal</button>` : '';
   shell('Deals', `
@@ -216,6 +217,8 @@ async function renderDeals() {
         : `<div class="stat"><div class="label">Unpaid for delivered goods</div><div class="value tnum">${money(p.totalUnderpaidToDate || 0)}</div></div>`}
     </div>
     ${State._awaitingLetters ? `<div class="alert warn letter-alert"><b>${State._awaitingLetters} completed ${State._awaitingLetters === 1 ? 'deal is' : 'deals are'} waiting for a manufacturer balance letter.</b> <a href="#" id="go-completed">Open Completed Deals →</a></div>` : ''}
+    ${activeDeals.length > 1 ? listTools('q-deals') : ''}
+    <div class="empty small hidden" id="q-deals-none">No deal matches that search.</div>
     ${activeDeals.length ? `<div class="dcard-grid">${cards}</div>` :
       `<div class="empty"><h3>No active deals</h3><p>${canWrite() ? 'Create your first deal to start tracking payments and deliveries.' : 'Deals will appear here once created.'}</p></div>`}
   `, actions);
@@ -228,6 +231,9 @@ async function renderDeals() {
   if (nd) nd.onclick = newDealModal;
   const gc = document.getElementById('go-completed');
   if (gc) gc.onclick = (e) => { e.preventDefault(); go('completed'); };
+  wireCardEdits();
+  wireDealSearch('q-deals', activeDeals);
+  wireSortToggle();
 }
 
 function dealCard(d) {
@@ -247,10 +253,14 @@ function dealCard(d) {
     <div class="dcard" data-deal="${d.id}" tabindex="0" role="button" aria-label="Open deal ${esc(d.ref)}">
       <div class="dcard-top">
         <span class="dcard-ref">${esc(d.ref)}</span>
-        <span class="pill ${d.status === 'active' ? 'blue' : d.status === 'completed' ? 'green' : 'gray'}">${esc(d.status)}</span>
+        <span class="dcard-top-r">
+          <span class="pill ${d.status === 'active' ? 'blue' : d.status === 'completed' ? 'green' : 'gray'}">${esc(d.status)}</span>
+          ${isAdmin() ? `<button class="card-edit" type="button" data-editdeal="${d.id}" aria-label="Edit details of ${esc(d.ref)}" title="Edit name, parties and invoice numbers">✎</button>` : ''}
+        </span>
       </div>
       <div class="dcard-title">${esc(d.title)}</div>
       <div class="dcard-parties">${esc(d.customer_name)} <span>·</span> ${esc(d.supplier_name)}</div>
+      ${invoiceNumbers(d)}
       <div class="dcard-figs">
         <div><span>Deal value</span><b>${money(invoice, cur)}</b></div>
         ${isAdmin()
@@ -284,6 +294,10 @@ function newDealModal() {
         <select id="f_cur"><option>EUR</option><option>USD</option><option>GBP</option><option>RUB</option></select></div>
     </div>
     <div class="field"><label>Title</label><input id="f_title" placeholder="Short description of the deal" /></div>
+    <div class="form-row">
+      <div class="field"><label>Supplier proforma number</label><input id="f_pno" placeholder="as printed on the proforma" /></div>
+      <div class="field"><label>Our invoice number to the client</label><input id="f_ino" placeholder="as printed on our invoice" /></div>
+    </div>
     <div class="form-row">
       <div class="field"><label>Supplier (proforma from)</label><input id="f_supp" placeholder="e.g. Latvian supplier" /></div>
       <div class="field"><label>Client (we invoice)</label><input id="f_cust" /></div>
@@ -358,6 +372,7 @@ function newDealModal() {
       ref: v('f_ref'), currency: v('f_cur'), title: v('f_title'),
       customer_name: v('f_cust'), supplier_name: v('f_supp'),
       proforma_total: v('f_prof'), invoice_total: v('f_inv'), commission_rate: v('f_rate'),
+      proforma_number: v('f_pno'), invoice_number: v('f_ino'),
     };
     try {
       const r = await api('/deals', { method: 'POST', body: payload });
@@ -389,7 +404,7 @@ async function renderDeal() {
     <button class="btn" id="back">← Deals</button>
     <button class="btn" id="to-flow">Flows</button>
     ${isAdmin() ? `<button class="btn" id="deal-report">Partner report</button>` : ''}
-    ${isAdmin() && deal.status === 'active' ? `<button class="btn" id="editdeal">Edit deal</button>` : ''}
+    ${isAdmin() && !['deleted', 'purged'].includes(deal.status) ? `<button class="btn" id="editdeal">Edit deal</button>` : ''}
     ${isAdmin() && deal.status === 'active' ? `<button class="btn primary" id="complete">Mark complete</button>` : ''}
     ${isAdmin() && deal.status === 'active' ? `<button class="btn" id="archive">Archive</button>` : ''}
     ${isAdmin() && deal.status === 'completed' ? `<button class="btn" id="reopen">Reopen</button>` : ''}`;
@@ -413,6 +428,7 @@ async function renderDeal() {
       <span class="pill ${deal.status === 'active' ? 'blue' : deal.status === 'completed' ? 'green' : 'gray'}">${esc(deal.status)}</span>
     </div>
     <div class="parties muted" style="margin-bottom:8px">${esc(deal.customer_name)} &nbsp;·&nbsp; ${esc(deal.supplier_name)}</div>
+    ${invoiceNumbers(deal)}
     ${closurePanel(d)}
     ${!ro ? `<div class="nextline"><span class="nextline-k">Next:</span> ${esc(na.label)}</div>` : ''}
 
@@ -1251,7 +1267,7 @@ function wireDeal(d) {
   bind('closeout-complete', () => completeDeal(deal));
   bind('archive', () => lifecycleAction(deal.id, 'archive', 'Archive this deal?'));
   bind('reopen', () => lifecycleAction(deal.id, 'reopen', 'Reopen this deal for editing?'));
-  bind('editdeal', () => editDealModal(deal, d.computed));
+  bind('editdeal', () => dealDetailsModal(deal.id, () => renderDeal()));
   bind('upload-doc', () => uploadModal(deal.id, null, null));
   bind('audit-toggle', toggleAudit);
 
@@ -1554,7 +1570,7 @@ function editDealModal(deal, c) {
     const payload = { title: v('ed_title'), customer_name: v('ed_cust'), supplier_name: v('ed_supp'), proforma_total: v('ed_prof'), invoice_total: v('ed_inv') };
     if (!locked) { payload.customer_prepay_required = v('ed_cprep'); payload.supplier_prepay_required = v('ed_sprep'); }
     if (document.getElementById('ed_rate')) payload.commission_rate = v('ed_rate');
-    try { await api('/deals/' + deal.id, { method: 'PATCH', body: payload }); close(); ok('Deal updated.'); renderDeal(); }
+    try { await api('/deals/' + deal.id, { method: 'PATCH', body: payload }); close(); ok('Deal updated.'); render(); }
     catch (e) { showErr('ed_err', e.message); }
   };
 }
@@ -1947,6 +1963,95 @@ function purgeModal(id, ref) {
   };
 }
 
+/* ================= DEAL DETAILS (name, parties, invoice numbers) ================= */
+function invoiceNumbers(d) {
+  const p = (d.proforma_number || '').trim(), i = (d.invoice_number || '').trim();
+  if (!p && !i) return isAdmin() ? `<div class="inv-nums empty">No invoice numbers yet — use ✎ to add them</div>` : '';
+  return `<div class="inv-nums">${p ? `<span title="Supplier proforma number"><em>Proforma</em> ${esc(p)}</span>` : ''}${i ? `<span title="Our invoice number to the client"><em>Invoice</em> ${esc(i)}</span>` : ''}</div>`;
+}
+/* Edit what a deal is called — allowed any time, also on completed deals. */
+async function dealDetailsModal(id, after) {
+  let d;
+  try { d = await api('/deals/' + id); } catch (e) { return err(e.message); }
+  const deal = d.deal;
+  const body = `
+    <div class="form-row">
+      <div class="field"><label>Deal reference</label><input id="dd_ref" value="${esc(deal.ref)}" /></div>
+      <div class="field"><label>Deal name</label><input id="dd_title" value="${esc(deal.title)}" /></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Supplier proforma number</label><input id="dd_pno" value="${esc(deal.proforma_number || '')}" placeholder="e.g. PMS-PF-2026-041" /></div>
+      <div class="field"><label>Our invoice number to the client</label><input id="dd_ino" value="${esc(deal.invoice_number || '')}" placeholder="e.g. EP-INV-2026-017" /></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Client</label><input id="dd_cust" value="${esc(deal.customer_name)}" /></div>
+      <div class="field"><label>Supplier</label><input id="dd_supp" value="${esc(deal.supplier_name)}" /></div>
+    </div>
+    <div class="field"><label>Notes</label><textarea id="dd_notes">${esc(deal.notes || '')}</textarea></div>
+    ${deal.status === 'active' ? `<div class="hint">Need to change the amounts? <a href="#" id="dd_amounts">Edit amounts</a></div>`
+      : `<div class="hint">This deal is ${esc(deal.status)} — names and numbers can still be changed; amounts are locked.</div>`}
+    <div id="dd_err" class="alert err hidden"></div>`;
+  const close = openModal('Edit deal details — ' + deal.ref, body,
+    `<button class="btn" id="dd_no">Cancel</button><button class="btn primary" id="dd_yes">Save details</button>`, { wide: true });
+  document.getElementById('dd_no').onclick = close;
+  const am = document.getElementById('dd_amounts');
+  if (am) am.onclick = (e) => { e.preventDefault(); close(); editDealModal(deal, d.computed); };
+  document.getElementById('dd_yes').onclick = async () => {
+    const payload = { ref: v('dd_ref'), title: v('dd_title'), proforma_number: v('dd_pno'), invoice_number: v('dd_ino'),
+      customer_name: v('dd_cust'), supplier_name: v('dd_supp'), notes: document.getElementById('dd_notes').value };
+    try { await api('/deals/' + id, { method: 'PATCH', body: payload }); close(); ok('Deal details saved.'); if (after) after(); else render(); }
+    catch (e) { showErr('dd_err', e.message); }
+  };
+}
+/* the ✎ on a card edits details without opening the deal */
+function wireCardEdits() {
+  document.querySelectorAll('[data-editdeal]').forEach((b) => {
+    b.onclick = (e) => { e.stopPropagation(); dealDetailsModal(Number(b.dataset.editdeal)); };
+    b.onkeydown = (e) => e.stopPropagation();
+  });
+}
+/* Deals are listed in the order they were added (1 → 7), or reversed. */
+function getSortDir() { try { return localStorage.getItem('ep-sort') === 'desc' ? 'desc' : 'asc'; } catch { return 'asc'; } }
+function byAdded(list) {
+  const dir = getSortDir();
+  return (list || []).slice().sort((a, b) => (dir === 'asc' ? a.id - b.id : b.id - a.id));
+}
+function listTools(searchId) {
+  const dir = getSortDir();
+  return `<div class="list-tools">${dealSearchBox(searchId)}
+    <div class="sort-toggle" role="group" aria-label="Order of deals"><span>Order</span>
+      <button type="button" data-sort="asc" class="${dir === 'asc' ? 'on' : ''}" aria-pressed="${dir === 'asc'}">Oldest first</button>
+      <button type="button" data-sort="desc" class="${dir === 'desc' ? 'on' : ''}" aria-pressed="${dir === 'desc'}">Newest first</button>
+    </div></div>`;
+}
+function wireSortToggle() {
+  document.querySelectorAll('[data-sort]').forEach((b) => (b.onclick = () => {
+    try { localStorage.setItem('ep-sort', b.dataset.sort); } catch {}
+    render();
+  }));
+}
+/* filter the visible cards by reference, name, parties or invoice number */
+function dealSearchBox(id) {
+  return `<div class="deal-search"><input id="${id}" type="search" placeholder="Search by name, reference, client, supplier or invoice number" aria-label="Search deals" /></div>`;
+}
+function wireDealSearch(inputId, deals) {
+  const box = document.getElementById(inputId);
+  if (!box) return;
+  const hay = {};
+  deals.forEach((d) => { hay[d.id] = [d.ref, d.title, d.customer_name, d.supplier_name, d.proforma_number, d.invoice_number].join(' ').toLowerCase(); });
+  box.oninput = () => {
+    const q = box.value.trim().toLowerCase();
+    let shown = 0;
+    document.querySelectorAll('[data-deal],[data-flow]').forEach((c) => {
+      const id = Number(c.dataset.deal || c.dataset.flow);
+      const hit = !q || (hay[id] || '').includes(q);
+      c.classList.toggle('hidden', !hit); if (hit) shown++;
+    });
+    const none = document.getElementById(inputId + '-none');
+    if (none) none.classList.toggle('hidden', shown > 0);
+  };
+}
+
 /* ================= COMPLETED DEALS ================= */
 function closureBadge(d, cur) {
   if (d.closure_state === 'awaiting_letter') {
@@ -1962,8 +2067,7 @@ async function renderCompleted() {
   let data;
   try { data = await api('/deals'); } catch (e) { return err(e.message); }
   State._dealList = data.deals;
-  const done = data.deals.filter((d) => d.status === 'completed')
-    .sort((a, b) => (a.closure_state === 'awaiting_letter' ? 0 : 1) - (b.closure_state === 'awaiting_letter' ? 0 : 1) || String(b.completed_at || '').localeCompare(String(a.completed_at || '')));
+  const done = byAdded(data.deals.filter((d) => d.status === 'completed'));
   const waiting = done.filter((d) => d.closure_state === 'awaiting_letter');
   State._awaitingLetters = waiting.length;
   const openTotal = waiting.reduce((a, d) => a + Number(d.closure_balance || 0), 0);
@@ -1975,6 +2079,8 @@ async function renderCompleted() {
       <div class="stat"><div class="label">Open balances held by manufacturers</div><div class="value tnum">${money(openTotal)}</div></div>
     </div>
     ${waiting.length ? `<div class="alert warn letter-alert">These deals are marked complete, but the manufacturer still holds money. Each one needs the manufacturer's balance letter attached before it is fully closed.</div>` : ''}
+    ${done.length > 1 ? listTools('q-done') : ''}
+    <div class="empty small hidden" id="q-done-none">No deal matches that search.</div>
     ${done.length ? `<div class="dcard-grid">${done.map(dealCard).join('')}</div>`
       : `<div class="empty"><h3>No completed deals yet</h3><p>Deals you mark complete appear here.</p></div>`}
   `);
@@ -1982,6 +2088,9 @@ async function renderCompleted() {
     c.onclick = () => go('deal', { id: Number(c.dataset.deal) });
     c.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); c.click(); } };
   });
+  wireCardEdits();
+  wireDealSearch('q-done', done);
+  wireSortToggle();
 }
 
 /* ================= OVERVIEW — deal cards with mini flow diagrams ================= */
@@ -1989,11 +2098,13 @@ async function renderOverview() {
   let data;
   try { data = await api('/deals'); } catch (e) { return err(e.message); }
   State._dealList = data.deals;
-  const cards = data.deals.map((d) => `
+  const cards = byAdded(data.deals).map((d) => `
     <div class="ovcard" data-flow="${d.id}" tabindex="0" role="button" aria-label="Open flows for ${esc(d.ref)}">
       <div class="dcard-top"><span class="dcard-ref">${esc(d.ref)}</span>
-        <span class="pill ${d.status === 'active' ? 'blue' : 'green'}">${esc(d.status)}</span></div>
+        <span class="dcard-top-r"><span class="pill ${d.status === 'active' ? 'blue' : 'green'}">${esc(d.status)}</span>
+        ${isAdmin() ? `<button class="card-edit" type="button" data-editdeal="${d.id}" aria-label="Edit details of ${esc(d.ref)}" title="Edit name, parties and invoice numbers">✎</button>` : ''}</span></div>
       <div class="dcard-title">${esc(d.title)}</div>
+      ${invoiceNumbers(d)}
       ${miniDiagram(d)}
       <div class="ov-stats">
         <div><span>Paid in</span><b class="green">${pct(d.invoice_total > 0 ? Math.min(100, d.computed.totalReceived / d.invoice_total * 100) : 0)}</b></div>
@@ -2004,6 +2115,8 @@ async function renderOverview() {
   const actions = isAdmin() && data.deals.length ? `<button class="btn primary" id="ov-report">Partner report</button>` : '';
   shell('Overview', `
     <p class="lead">Every deal as a picture: money flowing in and out, and goods delivered against the proforma. Click a card to see its flows in detail.</p>
+    ${data.deals.length > 1 ? listTools('q-ov') : ''}
+    <div class="empty small hidden" id="q-ov-none">No deal matches that search.</div>
     ${data.deals.length ? `<div class="dcard-grid">${cards}</div>` : `<div class="empty"><h3>No deals yet</h3></div>`}
   `, actions);
   document.querySelectorAll('[data-flow]').forEach((c) => {
@@ -2012,6 +2125,9 @@ async function renderOverview() {
   });
   const rb = document.getElementById('ov-report');
   if (rb) rb.onclick = () => partnerReportModal(data.deals);
+  wireCardEdits();
+  wireDealSearch('q-ov', data.deals);
+  wireSortToggle();
 }
 
 /* tiny version of the flows for an overview card (native tooltips, so the
@@ -2065,8 +2181,9 @@ async function renderFlow() {
   shell(deal.ref, `
     <div class="deal-head"><h2>${esc(deal.title)}</h2>
       <span class="pill ${deal.status === 'active' ? 'blue' : deal.status === 'completed' ? 'green' : 'gray'}">${esc(deal.status)}</span></div>
-    <div class="parties muted" style="margin-bottom:14px">${esc(deal.customer_name)} &nbsp;·&nbsp; ${esc(deal.supplier_name)}</div>
-    <div class="info-strip">
+    <div class="parties muted" style="margin-bottom:6px">${esc(deal.customer_name)} &nbsp;·&nbsp; ${esc(deal.supplier_name)}</div>
+    ${invoiceNumbers(deal)}
+    <div class="info-strip" style="margin-top:12px">
       <div><span>Deal value</span><b>${money(deal.invoice_total, cur)}</b></div>
       <div><span>Supplier proforma</span><b>${money(deal.proforma_total, cur)}</b></div>
       <div><span>Opened</span><b>${fdate(deal.created_at)}</b></div>
@@ -2148,7 +2265,7 @@ function partnerReportSection(n, d, opts) {
   const to = latvia ? 'поставщику (Латвия)' : `поставщику (${label})`;
   const L = [];
 
-  L.push(`${n} Сделка${opts.showRef ? ` (${deal.ref})` : ''}`);
+  L.push(`${n} Сделка${opts.showRef ? ` (${deal.ref}${deal.invoice_number ? `, инвойс № ${deal.invoice_number}` : ''})` : ''}`);
   L.push('');
   L.push(`Инвойс со стороны Europa Pharmaceuticals вам был выслан на ${ruNum(deal.invoice_total)} €. ` +
     (latvia ? `Латыши нам высылали на ${ruNum(deal.proforma_total)} €.` : `Поставщик (${label}) выслал нам инвойс на ${ruNum(deal.proforma_total)} €.`));
@@ -2286,7 +2403,7 @@ async function renderReports() {
       <div class="mvals"><span class="green tnum">${money(m.in)}</span> <span class="muted">/</span> <span class="blue tnum">${money(m.out)}</span></div>
     </div>`).join('') : '<div class="meta">No payments recorded yet.</div>';
 
-  const dealRows = r.deals.map((d) => `
+  const dealRows = byAdded(r.deals).map((d) => `
     <tr>
       <td data-label="Deal"><a href="#" data-open-deal="${d.id}">${esc(d.ref)}</a> — ${esc(d.title)}</td>
       <td class="num" data-label="Received">${money(d.received, d.currency)}</td>
@@ -2346,36 +2463,36 @@ function render() {
 
 /* ================= BOOT ================= */
 /* ================= ZOOM =================
-   Scales the whole app (not the browser). The level is remembered per device. */
+   Scales the main screen only (the sidebar keeps its size). Remembered per device.
+   Default is 90%, a little smaller than the browser's normal size. */
 const ZOOM_STEPS = [0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 1, 1.1, 1.25];
+const ZOOM_DEFAULT = 0.9;
 function getZoom() {
-  try { const z = parseFloat(localStorage.getItem('ep-zoom')); if (ZOOM_STEPS.includes(z)) return z; } catch {}
-  return 1;
+  try { const z = parseFloat(localStorage.getItem('ep-zoom-main')); if (ZOOM_STEPS.includes(z)) return z; } catch {}
+  return ZOOM_DEFAULT;
 }
 function applyZoom(z) {
-  const root = document.getElementById('root');
-  if (root) root.style.zoom = z === 1 ? '' : String(z);
-  document.documentElement.style.setProperty('--z', String(z));
+  const main = document.querySelector('.main');
+  if (main) main.style.zoom = z === 1 ? '' : String(z);
   const lbl = document.getElementById('zm-reset');
   if (lbl) lbl.textContent = Math.round(z * 100) + '%';
 }
 function setZoom(z) {
-  try { localStorage.setItem('ep-zoom', String(z)); } catch {}
+  try { localStorage.setItem('ep-zoom-main', String(z)); } catch {}
   applyZoom(z);
 }
 function stepZoom(dir) {
   const i = ZOOM_STEPS.indexOf(getZoom());
-  setZoom(ZOOM_STEPS[Math.max(0, Math.min(ZOOM_STEPS.length - 1, (i < 0 ? 6 : i) + dir))]);
+  setZoom(ZOOM_STEPS[Math.max(0, Math.min(ZOOM_STEPS.length - 1, (i < 0 ? ZOOM_STEPS.indexOf(ZOOM_DEFAULT) : i) + dir))]);
 }
 document.addEventListener('keydown', (e) => {   // Alt + / Alt − / Alt 0 as shortcuts
   if (!e.altKey || e.ctrlKey || e.metaKey) return;
   if (e.key === '=' || e.key === '+') { e.preventDefault(); stepZoom(1); }
   else if (e.key === '-') { e.preventDefault(); stepZoom(-1); }
-  else if (e.key === '0') { e.preventDefault(); setZoom(1); }
+  else if (e.key === '0') { e.preventDefault(); setZoom(ZOOM_DEFAULT); }
 });
 
 (async function boot() {
-  applyZoom(getZoom());
   try { State.user = await api('/me'); } catch { State.user = null; }
   render();
 })();
