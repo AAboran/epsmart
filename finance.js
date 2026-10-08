@@ -288,6 +288,8 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
 function nextAction(deal, c) {
   const eps = 0.005;
   if (deal.status === 'archived') return { code: 'archived', label: 'Archived', priority: 90 };
+  if (deal.status === 'completed' && deal.closure_state === 'awaiting_letter')
+    return { code: 'await_letter', label: 'Attach the manufacturer\'s balance letter', priority: 1 };
   if (deal.status === 'completed') return { code: 'complete', label: 'Completed', priority: 95 };
 
   if (c.companyMoneyFronted > eps)

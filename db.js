@@ -178,6 +178,11 @@ ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS pay_status TEXT NOT NULL 
 ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS paid_date TEXT;
 ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS planned_pay_date TEXT;
 ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS funded_by INTEGER;
+ALTER TABLE deals ADD COLUMN IF NOT EXISTS closure_state TEXT;
+ALTER TABLE deals ADD COLUMN IF NOT EXISTS closure_balance NUMERIC;
+ALTER TABLE deals ADD COLUMN IF NOT EXISTS closure_option TEXT;
+ALTER TABLE deals ADD COLUMN IF NOT EXISTS closure_note TEXT;
+ALTER TABLE deals ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
 `;
 
 let readyPromise = null;

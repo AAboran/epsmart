@@ -135,6 +135,7 @@ function shell(title, bodyHtml, actionsHtml = '') {
   const nav = [
     ['deals', 'Deals'],
     ['overview', 'Overview'],
+    ['completed', 'Completed Deals', State._awaitingLetters ? `<span class="badge">${State._awaitingLetters}</span>` : ''],
     ['reports', 'Total Finances'],
     ['approvals', 'Approvals', isAdmin() ? pendingBadge : ''],
     ['users', 'User access', ''],
@@ -147,7 +148,7 @@ function shell(title, bodyHtml, actionsHtml = '') {
       <aside class="sidebar" id="sidebar">
         <div class="brand"><img src="/img/europa-icon.png" alt="" class="brand-icon" /><div class="brand-tx">Europa Pharmaceutical<span>Deal Control</span></div></div>
         ${nav.map(([n, label, badge]) => `
-          <button class="nav-item ${(({ deal: 'deals', flow: 'overview' })[State.route.name] || State.route.name) === n ? 'active' : ''}" data-nav="${n}">
+          <button class="nav-item ${(({ deal: State._dealCompleted ? 'completed' : 'deals', flow: 'overview' })[State.route.name] || State.route.name) === n ? 'active' : ''}" data-nav="${n}">
             ${label} ${badge || ''}
           </button>`).join('')}
         <div class="nav-spacer"></div>
@@ -164,6 +165,11 @@ function shell(title, bodyHtml, actionsHtml = '') {
           <button class="btn sm menu-btn" id="menu">☰</button>
           <h1>${esc(title)}</h1>
           <div style="flex:1"></div>
+          <div class="zoomctl" role="group" aria-label="Page zoom">
+            <button type="button" id="zm-out" aria-label="Zoom out" title="Zoom out">−</button>
+            <button type="button" id="zm-reset" aria-label="Reset zoom" title="Reset to 100%">${Math.round(getZoom() * 100)}%</button>
+            <button type="button" id="zm-in" aria-label="Zoom in" title="Zoom in">+</button>
+          </div>
           <button class="bell" id="bell" aria-label="Notifications">🔔<span class="bell-dot hidden" id="bell-dot"></span></button>
           ${actionsHtml}
         </div>
@@ -174,6 +180,9 @@ function shell(title, bodyHtml, actionsHtml = '') {
   document.querySelectorAll('[data-nav]').forEach((b) => (b.onclick = () => go(b.dataset.nav)));
   document.getElementById('logout').onclick = async () => { await api('/logout', { method: 'POST' }); State.user = null; renderLogin(); };
   document.getElementById('bell').onclick = notificationsModal;
+  document.getElementById('zm-out').onclick = () => stepZoom(-1);
+  document.getElementById('zm-in').onclick = () => stepZoom(1);
+  document.getElementById('zm-reset').onclick = () => setZoom(1);
   refreshBell();
   fetch('/version').then((r) => r.json()).then((j) => {
     const el = document.getElementById('buildstamp');
@@ -192,7 +201,10 @@ async function renderDeals() {
   try { data = await api('/deals'); } catch (e) { return err(e.message); }
   if (isAdmin()) { try { State._pendingCount = (await api('/approvals')).length; } catch {} }
   const p = data.portfolio;
-  const cards = data.deals.map(dealCard).join('');
+  State._dealList = data.deals;
+  State._awaitingLetters = data.deals.filter((d) => d.closure_state === 'awaiting_letter').length;
+  const activeDeals = data.deals.filter((d) => d.status === 'active');
+  const cards = activeDeals.map(dealCard).join('');
   const actions = can('admin', 'office') ? `<button class="btn primary" id="newdeal">New deal</button>` : '';
   shell('Deals', `
     <div class="stats">
@@ -203,8 +215,9 @@ async function renderDeals() {
         ? `<div class="stat"><div class="label">Our income kept</div><div class="value gold tnum">${money(p.totalIncomeKept)}</div><div class="stat-sub">of ${money(p.totalIncomeExpected)} expected</div></div>`
         : `<div class="stat"><div class="label">Unpaid for delivered goods</div><div class="value tnum">${money(p.totalUnderpaidToDate || 0)}</div></div>`}
     </div>
-    ${data.deals.length ? `<div class="dcard-grid">${cards}</div>` :
-      `<div class="empty"><h3>No active deals yet</h3><p>${canWrite() ? 'Create your first deal to start tracking payments and deliveries.' : 'Deals will appear here once created.'}</p></div>`}
+    ${State._awaitingLetters ? `<div class="alert warn letter-alert"><b>${State._awaitingLetters} completed ${State._awaitingLetters === 1 ? 'deal is' : 'deals are'} waiting for a manufacturer balance letter.</b> <a href="#" id="go-completed">Open Completed Deals →</a></div>` : ''}
+    ${activeDeals.length ? `<div class="dcard-grid">${cards}</div>` :
+      `<div class="empty"><h3>No active deals</h3><p>${canWrite() ? 'Create your first deal to start tracking payments and deliveries.' : 'Deals will appear here once created.'}</p></div>`}
   `, actions);
 
   document.querySelectorAll('[data-deal]').forEach((c) => {
@@ -213,6 +226,8 @@ async function renderDeals() {
   });
   const nd = document.getElementById('newdeal');
   if (nd) nd.onclick = newDealModal;
+  const gc = document.getElementById('go-completed');
+  if (gc) gc.onclick = (e) => { e.preventDefault(); go('completed'); };
 }
 
 function dealCard(d) {
@@ -247,6 +262,7 @@ function dealCard(d) {
         ${bar('Paid out', money(paidOut, cur), outPct, 'blue', isAdmin() ? (c.supplierOpenToPay > 0.005 ? `${money(c.supplierOpenToPay, cur)} open to pay` : 'nothing open') : 'paid to the supplier')}
         ${bar('Delivered', pct(c.deliveryPct), Math.min(100, c.deliveryPct || 0), 'navy', `${money(c.deliveredValue, cur)} of ${money(c.deliveryTarget, cur)} proforma`)}
       </div>
+      ${closureBadge(d, cur)}
       <div class="dcard-next ${naClass}"><span>Next</span> ${esc(na.label)}</div>
       ${isAdmin() && c.companyMoneyFronted > 0.005 ? `<span class="pill red" style="margin-top:8px">Fronted ${money(c.companyMoneyFronted, cur)}</span>` : ''}
     </div>`;
@@ -366,6 +382,7 @@ async function renderDeal() {
   State.cache.docs = {}; (d.documents || []).forEach((x) => { State.cache.docs[x.id] = { mime: x.mime, name: x.original_name }; });
   const deal = d.deal, c = d.computed, cur = deal.currency, na = d.nextAction;
   const ro = deal.status !== 'active'; // read-only for entries
+  State._dealCompleted = deal.status === 'completed';
   const naClass = na.priority === 0 ? 'attn' : (na.code === 'complete_deal' ? 'done' : '');
 
   const actions = `
@@ -377,7 +394,7 @@ async function renderDeal() {
     ${isAdmin() && deal.status === 'active' ? `<button class="btn" id="archive">Archive</button>` : ''}
     ${isAdmin() && deal.status === 'completed' ? `<button class="btn" id="reopen">Reopen</button>` : ''}`;
 
-  const roBanner = ro ? `<div class="alert info">This deal is <b>${esc(deal.status)}</b> and read-only.${isAdmin() && deal.status === 'completed' ? ' Reopen it to add activity.' : ''}</div>` : '';
+  const roBanner = ro && !deal.closure_state ? `<div class="alert info">This deal is <b>${esc(deal.status)}</b> and read-only.${isAdmin() && deal.status === 'completed' ? ' Reopen it to add activity.' : ''}</div>` : '';
   const pendBanner = d.pendingApprovals.length
     ? `<div class="alert warn">${d.pendingApprovals.length} submission(s) awaiting administrator approval — not yet in the ledger.</div>` : '';
   const fundBanner = c.supplierFundingShortfall > 0
@@ -396,6 +413,7 @@ async function renderDeal() {
       <span class="pill ${deal.status === 'active' ? 'blue' : deal.status === 'completed' ? 'green' : 'gray'}">${esc(deal.status)}</span>
     </div>
     <div class="parties muted" style="margin-bottom:8px">${esc(deal.customer_name)} &nbsp;·&nbsp; ${esc(deal.supplier_name)}</div>
+    ${closurePanel(d)}
     ${!ro ? `<div class="nextline"><span class="nextline-k">Next:</span> ${esc(na.label)}</div>` : ''}
 
     <!-- THE DEAL AT A GLANCE: live diagram of both flows -->
@@ -1173,7 +1191,7 @@ function sectionCloseout(c, cur, deal) {
 }
 
 /* ---- Documents ---- */
-const DOC_GROUPS = ['Customer invoices', 'Supplier proformas', 'Supplier commercial invoices', 'Customer payment confirmations', 'Supplier payment confirmations', 'Delivery notes', 'Shipping documents', 'Other documents'];
+const DOC_GROUPS = ['Customer invoices', 'Supplier proformas', 'Supplier commercial invoices', 'Customer payment confirmations', 'Supplier payment confirmations', 'Delivery notes', 'Shipping documents', 'Manufacturer balance letters', 'Other documents'];
 function sectionDocuments(d, cur) {
   const byCat = {}; DOC_GROUPS.forEach((g) => (byCat[g] = []));
   d.documents.forEach((doc) => { (byCat[doc.category] || (byCat['Other documents'])).push(doc); });
@@ -1265,6 +1283,7 @@ function wireDeal(d) {
   document.querySelectorAll('[data-tileupload]').forEach((b) => (b.onclick = () => quickUpload(deal.id, b.dataset.tileupload)));
   document.querySelectorAll('[data-preview]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); docPreview(Number(a.dataset.preview)); }));
   wireDeliveryButtons(d);
+  wireClosurePanel(d);
   document.querySelectorAll('[data-docdel]').forEach((b) => (b.onclick = () => {
     const id = b.dataset.docdel;
     const close = openModal('Delete file', '<p>Delete this uploaded file? This cannot be undone.</p>',
@@ -1541,15 +1560,187 @@ function editDealModal(deal, c) {
 }
 
 /* ---- lifecycle ---- */
+/* Mark complete: show the balances first. If the manufacturer still holds our
+   money, the deal is completed but waits for their balance letter. */
 function completeDeal(deal) {
-  const body = `<p>Mark <b>${esc(deal.ref)}</b> complete? Completed deals become read-only until an administrator reopens them.</p>`;
-  const close = openModal('Mark deal complete', body, `<button class="btn" id="c_no">Cancel</button><button class="btn primary" id="c_yes">Mark complete</button>`);
+  const d = State.cache.deal;
+  const c = d.computed, cur = deal.currency;
+  const posted = (arr) => (arr || []).filter((x) => x.status === 'posted');
+  const paidOut = posted(d.supplierPayments).reduce((a, p) => a + Number(p.amount || 0), 0);
+  const delivered = c.deliveredValue || 0;
+  const mBal = Math.round((paidOut - delivered) * 100) / 100;
+  const others = (State._dealList || []).filter((x) => x.id !== deal.id && x.status === 'active');
+  const body = `
+    <div class="rowset" style="margin-bottom:14px">
+      ${row('Paid to the manufacturer', money(paidOut, cur))}
+      ${row('Goods delivered (proforma value)', money(delivered, cur))}
+      ${row(mBal >= 0 ? 'Held by the manufacturer' : 'Delivered but not paid', money(Math.abs(mBal), cur), Math.abs(mBal) > 0.005 ? 'amber' : 'green')}
+      ${row('Client still to pay', money(c.customerBalance, cur), c.customerBalance > 0.005 ? 'amber' : 'green')}
+    </div>
+    ${mBal > 0.005 ? `
+      <div class="alert warn">The manufacturer still holds <b>${money(mBal, cur)}</b>. The deal will be marked <b>completed — awaiting manufacturer letter</b>, and is fully closed once their balance letter is attached.</div>
+      <div class="field"><label>How will this balance be settled?</label>
+        <label class="rep-item"><input type="radio" name="cl_opt" value="refund" checked/> <span><b>Refund</b> — the manufacturer pays ${money(mBal, cur)} back to us</span></label>
+        <label class="rep-item"><input type="radio" name="cl_opt" value="transfer"/> <span><b>Transfer</b> — the balance is carried over to other deals</span></label>
+      </div>
+      <div class="field hidden" id="cl_note_f"><label>Transfer to which deal(s)?</label>
+        ${others.length ? `<select id="cl_note_sel"><option value="">— choose a deal —</option>${others.map((o) => `<option value="${esc(o.ref)}">${esc(o.ref)} — ${esc(o.title)}</option>`).join('')}<option value="__other">Other / write it in</option></select>` : ''}
+        <input id="cl_note" placeholder="e.g. EP-2026-003 or the next proforma" class="${others.length ? 'hidden' : ''}" style="margin-top:8px"/></div>`
+    : mBal < -0.005 ? `<div class="alert warn">Goods worth <b>${money(-mBal, cur)}</b> have been delivered but not yet paid to the manufacturer. You can still complete the deal, but that payment remains due.</div>`
+    : `<div class="alert info">Payments to the manufacturer match the goods delivered — the deal will be fully closed.</div>`}
+    <p class="small muted">Completed deals become read-only until an administrator reopens them.</p>
+    <div id="cl_err" class="alert err hidden"></div>`;
+  const close = openModal('Mark deal complete', body,
+    `<button class="btn" id="c_no">Cancel</button><button class="btn primary" id="c_yes">${mBal > 0.005 ? 'Complete — await letter' : 'Mark complete'}</button>`);
+  const noteF = document.getElementById('cl_note_f');
+  const sel = document.getElementById('cl_note_sel'), note = document.getElementById('cl_note');
+  document.querySelectorAll('[name="cl_opt"]').forEach((r) => (r.onchange = () => noteF && noteF.classList.toggle('hidden', r.value !== 'transfer' || !r.checked)));
+  if (sel) sel.onchange = () => note.classList.toggle('hidden', sel.value !== '__other');
   document.getElementById('c_no').onclick = close;
   document.getElementById('c_yes').onclick = async () => {
-    try { await api('/deals/' + deal.id + '/complete', { method: 'POST' }); close(); ok('Deal completed.'); renderDeal(); }
-    catch (e) { err(e.message); close(); }
+    const opt = (document.querySelector('[name="cl_opt"]:checked') || {}).value || 'refund';
+    const target = sel && sel.value && sel.value !== '__other' ? sel.value : (note ? note.value.trim() : '');
+    try {
+      const r = await api('/deals/' + deal.id + '/complete', { method: 'POST', body: { option: opt, note: opt === 'transfer' ? target : '' } });
+      close();
+      ok(r.closure_state === 'awaiting_letter' ? 'Completed — now waiting for the manufacturer\'s balance letter.' : 'Deal completed.');
+      await renderDeal();
+      if (r.closure_state === 'awaiting_letter') letterModal(State.cache.deal);
+    } catch (e) { showErr('cl_err', e.message); }
   };
 }
+
+/* Panel shown on completed deals: status, open balance, letter upload. */
+function closurePanel(d) {
+  const deal = d.deal, cur = deal.currency;
+  if (!deal.closure_state) return '';
+  const letters = (d.documents || []).filter((x) => x.category === 'Manufacturer balance letters');
+  const waitingApproval = letters.filter((x) => x.status === 'awaiting');
+  const files = letters.length ? `<div class="cp-files">${letters.map((x) => `<a href="#" data-preview="${x.id}">${esc(x.original_name)}</a> <span class="pill ${x.status === 'approved' ? 'green' : 'amber'}">${x.status === 'approved' ? 'approved' : 'awaiting approval'}</span>`).join('<br>')}</div>` : '';
+  if (deal.closure_state === 'closed') {
+    if (!(Number(deal.closure_balance) > 0.005)) return `<div class="closure-panel done"><div class="cp-head"><span class="cp-state">Completed</span> Fully closed — no open balances.</div></div>`;
+    return `<div class="closure-panel done">
+      <div class="cp-head"><span class="cp-state">Closed</span> The manufacturer confirmed the balance of <b>${money(deal.closure_balance, cur)}</b> (${deal.closure_option === 'transfer' ? 'transfer to other deals' : 'refund to us'}).</div>
+      ${files}
+    </div>`;
+  }
+  const how = deal.closure_option === 'transfer'
+    ? `to be <b>transferred to other deals</b>${deal.closure_note ? ` (${esc(deal.closure_note)})` : ''}`
+    : 'to be <b>refunded to Europa</b>';
+  return `<div class="closure-panel open">
+    <div class="cp-head"><span class="cp-state">Completed — not yet closed</span>
+      The manufacturer still holds <b>${money(deal.closure_balance, cur)}</b>, ${how}.</div>
+    <div class="cp-body">A balance letter from the manufacturer must be attached to close this deal.
+      ${waitingApproval.length ? (isAdmin() ? ' A letter has been uploaded — approve it below to close the deal.' : ' Your uploaded letter is waiting for Europa\'s approval.') : ''}</div>
+    ${files}
+    <div class="btn-row" style="margin-top:12px">
+      ${canWrite() ? `<button class="btn primary" id="cp-upload">Upload manufacturer letter</button>` : ''}
+      ${isAdmin() ? `<button class="btn" id="cp-letter">Prepare letter to manufacturer</button>` : ''}
+      ${isAdmin() && waitingApproval.length ? waitingApproval.map((x) => `<button class="btn" data-cp-approve="${x.id}">Approve ${esc(x.original_name)}</button>`).join('') : ''}
+    </div>
+  </div>`;
+}
+function wireClosurePanel(d) {
+  const up = document.getElementById('cp-upload');
+  if (up) up.onclick = () => quickUpload(d.deal.id, 'Manufacturer balance letters');
+  const lt = document.getElementById('cp-letter');
+  if (lt) lt.onclick = () => letterModal(d);
+  document.querySelectorAll('[data-cp-approve]').forEach((b) => (b.onclick = async () => {
+    try { await api('/documents/' + b.dataset.cpApprove, { method: 'PATCH', body: { status: 'approved' } }); ok('Letter approved — deal closed.'); renderDeal(); }
+    catch (e) { err(e.message); }
+  }));
+}
+
+/* ---------- Letter to the manufacturer (deterministic) ---------- */
+function letterText(d, option, lang, target) {
+  const deal = d.deal, cur = deal.currency, c = d.computed;
+  const posted = (arr) => (arr || []).filter((x) => x.status === 'posted');
+  const paidOut = posted(d.supplierPayments).reduce((a, p) => a + Number(p.amount || 0), 0);
+  const delivered = c.deliveredValue || 0;
+  const bal = Number(deal.closure_balance) || Math.max(0, paidOut - delivered);
+  const dels = posted(d.supplierInvoices).length;
+  const today = new Date().toISOString().slice(0, 10);
+  const signer = State.user && State.user.name && State.user.name !== 'Administrator' ? State.user.name + '\n' : '';
+  if (lang === 'ru') {
+    const n = (v) => ruNum(v) + ' €';
+    const settle = option === 'transfer'
+      ? `Просим зачесть остаток в размере ${n(bal)} в счёт ${target ? `сделки ${target}` : 'следующих сделок'} и подтвердить это письменно.`
+      : `Просим вернуть остаток в размере ${n(bal)} на счёт Europa Pharmaceutical s. r. o. и сообщить ожидаемую дату возврата.`;
+    return `Тема: Подтверждение остатка по сделке ${deal.ref}
+
+Уважаемые коллеги ${deal.supplier_name},
+
+По сделке ${deal.ref} (проформа на сумму ${n(deal.proforma_total)}) нами было оплачено ${n(paidOut)}. Поставлено товара на сумму ${n(delivered)} (${dels} ${ruPlural(dels, 'поставка', 'поставки', 'поставок')}).
+
+Таким образом, на вашей стороне остаётся наш остаток в размере ${n(bal)}.
+
+${settle}
+
+Прошу выслать подписанное письмо-подтверждение остатка — после его получения сделка будет закрыта.
+
+С уважением,
+${signer}Europa Pharmaceutical s. r. o.
+${ruDate(today)}`;
+  }
+  const n = (v) => money(v, cur);
+  const settle = option === 'transfer'
+    ? `We propose that this balance of ${n(bal)} is carried over and applied as a credit towards ${target ? `deal ${target}` : 'our upcoming deals'}. Please confirm this in writing.`
+    : `We kindly ask you to refund this balance of ${n(bal)} to Europa Pharmaceutical s. r. o. and to let us know the expected refund date.`;
+  return `Subject: Balance confirmation — deal ${deal.ref}
+
+Dear ${deal.supplier_name} team,
+
+For deal ${deal.ref} (proforma ${n(deal.proforma_total)}), we have paid you a total of ${n(paidOut)}. Goods delivered to date amount to ${n(delivered)} at proforma value (${dels} ${dels === 1 ? 'delivery' : 'deliveries'}).
+
+This leaves an open balance of ${n(bal)} in our favour.
+
+${settle}
+
+Please send us a signed letter confirming this balance; once we receive it, the deal will be closed on both sides.
+
+Kind regards,
+${signer}Europa Pharmaceutical s. r. o.
+${fdate(today)}`;
+}
+function letterModal(d) {
+  const deal = d.deal;
+  const opt0 = deal.closure_option === 'transfer' ? 'transfer' : 'refund';
+  const body = `
+    <div class="form-row">
+      <div class="field"><label>Settlement</label>
+        <select id="lt_opt"><option value="refund" ${opt0 === 'refund' ? 'selected' : ''}>Refund to us</option><option value="transfer" ${opt0 === 'transfer' ? 'selected' : ''}>Transfer to other deals</option></select></div>
+      <div class="field"><label>Language</label>
+        <select id="lt_lang"><option value="en">English</option><option value="ru">Русский</option></select></div>
+    </div>
+    <div class="field" id="lt_target_f"><label>Transfer to (deal reference)</label><input id="lt_target" value="${esc(deal.closure_note || '')}" placeholder="e.g. EP-2026-003"/></div>
+    <div class="field"><label>Letter — edit freely before copying</label><textarea id="lt_text" class="rep-text" spellcheck="false"></textarea></div>
+    <div class="hint">When the manufacturer replies with a signed letter, upload it on this deal to close it.</div>
+    <div id="lt_err" class="alert err hidden"></div>`;
+  const close = openModal('Letter to manufacturer — ' + deal.ref, body,
+    `<button class="btn" id="lt_close">Close</button><button class="btn primary" id="lt_copy">Copy letter</button>`, { wide: true });
+  const build = () => {
+    const opt = v('lt_opt');
+    document.getElementById('lt_target_f').classList.toggle('hidden', opt !== 'transfer');
+    document.getElementById('lt_text').value = letterText(d, opt, v('lt_lang'), v('lt_target'));
+  };
+  const saveOpt = async () => {   // remember the chosen settlement on the deal
+    if (!isAdmin() || deal.closure_state !== 'awaiting_letter') return;
+    try { await api('/deals/' + deal.id + '/closure', { method: 'POST', body: { option: v('lt_opt'), note: v('lt_target') } });
+      deal.closure_option = v('lt_opt'); deal.closure_note = v('lt_target'); } catch {}
+  };
+  document.getElementById('lt_opt').onchange = () => { build(); saveOpt(); };
+  document.getElementById('lt_target').onchange = () => { build(); saveOpt(); };
+  document.getElementById('lt_target').oninput = build;
+  document.getElementById('lt_lang').onchange = build;
+  document.getElementById('lt_close').onclick = () => { close(); if (State.route.name === 'deal') renderDeal(); };
+  document.getElementById('lt_copy').onclick = async () => {
+    const ta = document.getElementById('lt_text'); ta.select();
+    try { await navigator.clipboard.writeText(ta.value); } catch { document.execCommand('copy'); }
+    ok('Letter copied.');
+  };
+  build();
+}
+
 function lifecycleAction(id, action, prompt) {
   const close = openModal(action[0].toUpperCase() + action.slice(1) + ' deal', `<p>${esc(prompt)}</p>`,
     `<button class="btn" id="l_no">Cancel</button><button class="btn primary" id="l_yes">${action[0].toUpperCase() + action.slice(1)}</button>`);
@@ -1756,10 +1947,48 @@ function purgeModal(id, ref) {
   };
 }
 
+/* ================= COMPLETED DEALS ================= */
+function closureBadge(d, cur) {
+  if (d.closure_state === 'awaiting_letter') {
+    const how = d.closure_option === 'transfer' ? 'to be transferred to other deals' : 'to be refunded to us';
+    return `<div class="closure-badge open"><b>Completed — open balance ${money(d.closure_balance, cur)}</b>
+      <span>The manufacturer holds this amount (${how}). Their balance letter must be attached.</span></div>`;
+  }
+  if (d.closure_state === 'closed' && Number(d.closure_balance) > 0.005)
+    return `<div class="closure-badge done"><b>Closed with letter</b><span>Balance of ${money(d.closure_balance, cur)} confirmed by the manufacturer.</span></div>`;
+  return '';
+}
+async function renderCompleted() {
+  let data;
+  try { data = await api('/deals'); } catch (e) { return err(e.message); }
+  State._dealList = data.deals;
+  const done = data.deals.filter((d) => d.status === 'completed')
+    .sort((a, b) => (a.closure_state === 'awaiting_letter' ? 0 : 1) - (b.closure_state === 'awaiting_letter' ? 0 : 1) || String(b.completed_at || '').localeCompare(String(a.completed_at || '')));
+  const waiting = done.filter((d) => d.closure_state === 'awaiting_letter');
+  State._awaitingLetters = waiting.length;
+  const openTotal = waiting.reduce((a, d) => a + Number(d.closure_balance || 0), 0);
+  shell('Completed Deals', `
+    <div class="stats">
+      <div class="stat"><div class="label">Completed deals</div><div class="value">${done.length}</div></div>
+      <div class="stat"><div class="label">Fully closed</div><div class="value green">${done.length - waiting.length}</div></div>
+      <div class="stat"><div class="label">Waiting for manufacturer letter</div><div class="value ${waiting.length ? 'amber' : ''}">${waiting.length}</div></div>
+      <div class="stat"><div class="label">Open balances held by manufacturers</div><div class="value tnum">${money(openTotal)}</div></div>
+    </div>
+    ${waiting.length ? `<div class="alert warn letter-alert">These deals are marked complete, but the manufacturer still holds money. Each one needs the manufacturer's balance letter attached before it is fully closed.</div>` : ''}
+    ${done.length ? `<div class="dcard-grid">${done.map(dealCard).join('')}</div>`
+      : `<div class="empty"><h3>No completed deals yet</h3><p>Deals you mark complete appear here.</p></div>`}
+  `);
+  document.querySelectorAll('[data-deal]').forEach((c) => {
+    c.onclick = () => go('deal', { id: Number(c.dataset.deal) });
+    c.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); c.click(); } };
+  });
+}
+
 /* ================= OVERVIEW — deal cards with mini flow diagrams ================= */
 async function renderOverview() {
   let data;
   try { data = await api('/deals'); } catch (e) { return err(e.message); }
+  State._dealList = data.deals;
   const cards = data.deals.map((d) => `
     <div class="ovcard" data-flow="${d.id}" tabindex="0" role="button" aria-label="Open flows for ${esc(d.ref)}">
       <div class="dcard-top"><span class="dcard-ref">${esc(d.ref)}</span>
@@ -2105,6 +2334,7 @@ function render() {
   const r = State.route.name;
   if (r === 'deals') return renderDeals();
   if (r === 'overview') return renderOverview();
+  if (r === 'completed') return renderCompleted();
   if (r === 'flow') return renderFlow();
   if (r === 'reports') return renderReports();
   if (r === 'deal') return renderDeal();
@@ -2115,7 +2345,37 @@ function render() {
 }
 
 /* ================= BOOT ================= */
+/* ================= ZOOM =================
+   Scales the whole app (not the browser). The level is remembered per device. */
+const ZOOM_STEPS = [0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 1, 1.1, 1.25];
+function getZoom() {
+  try { const z = parseFloat(localStorage.getItem('ep-zoom')); if (ZOOM_STEPS.includes(z)) return z; } catch {}
+  return 1;
+}
+function applyZoom(z) {
+  const root = document.getElementById('root');
+  if (root) root.style.zoom = z === 1 ? '' : String(z);
+  document.documentElement.style.setProperty('--z', String(z));
+  const lbl = document.getElementById('zm-reset');
+  if (lbl) lbl.textContent = Math.round(z * 100) + '%';
+}
+function setZoom(z) {
+  try { localStorage.setItem('ep-zoom', String(z)); } catch {}
+  applyZoom(z);
+}
+function stepZoom(dir) {
+  const i = ZOOM_STEPS.indexOf(getZoom());
+  setZoom(ZOOM_STEPS[Math.max(0, Math.min(ZOOM_STEPS.length - 1, (i < 0 ? 6 : i) + dir))]);
+}
+document.addEventListener('keydown', (e) => {   // Alt + / Alt − / Alt 0 as shortcuts
+  if (!e.altKey || e.ctrlKey || e.metaKey) return;
+  if (e.key === '=' || e.key === '+') { e.preventDefault(); stepZoom(1); }
+  else if (e.key === '-') { e.preventDefault(); stepZoom(-1); }
+  else if (e.key === '0') { e.preventDefault(); setZoom(1); }
+});
+
 (async function boot() {
+  applyZoom(getZoom());
   try { State.user = await api('/me'); } catch { State.user = null; }
   render();
 })();

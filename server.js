@@ -187,6 +187,8 @@ app.get('/api/deals', requireAuth, wrap(async (req, res) => {
       id: d.id, ref: d.ref, title: d.title, customer_name: d.customer_name, supplier_name: d.supplier_name,
       currency: d.currency, status: d.status, proforma_total: d.proforma_total, invoice_total: d.invoice_total,
       customer_prepay_required: d.customer_prepay_required,
+      closure_state: d.closure_state, closure_balance: d.closure_balance, closure_option: d.closure_option,
+      completed_at: d.completed_at, closed_at: d.closed_at,
       computed: scrubComputed(computed, req.user), nextAction,
     });
   }
@@ -313,8 +315,73 @@ function lifecycle(action, fromStatuses, toStatus) {
     res.json({ ok: true, status: toStatus });
   });
 }
-app.post('/api/deals/:id/complete', requireAuth, requireRole('admin'), lifecycle('complete', ['active'], 'completed'));
-app.post('/api/deals/:id/reopen', requireAuth, requireRole('admin'), lifecycle('reopen', ['completed', 'archived'], 'active'));
+// ---------- completing a deal ----------
+// Paid to the manufacturer vs goods delivered (proforma value). If the
+// manufacturer still holds our money, the deal is completed but stays
+// "awaiting letter" until the manufacturer's balance letter is attached.
+const LETTER_CATEGORY = 'Manufacturer balance letters';
+const CLOSURE_OPTIONS = ['refund', 'transfer'];
+async function manufacturerBalance(deal) {
+  const { computed } = await computeFor(deal);
+  return finance.round2((computed.totalPaidToSupplier || 0) - (computed.deliveredValue || 0));
+}
+app.post('/api/deals/:id/complete', requireAuth, requireRole('admin'), wrap(async (req, res) => {
+  const d = await getDeal(Number(req.params.id));
+  if (!d) return res.status(404).json({ error: 'Deal not found.' });
+  if (d.status !== 'active') return res.status(409).json({ error: `Cannot complete a deal in "${d.status}" state.` });
+  const b = req.body || {};
+  const balance = await manufacturerBalance(d);
+  if (balance > eps) {
+    const option = CLOSURE_OPTIONS.includes(b.option) ? b.option : 'refund';
+    await query(`UPDATE deals SET status='completed', completed_at=NOW(), closure_state='awaiting_letter',
+      closure_balance=$1, closure_option=$2, closure_note=$3, closed_at=NULL WHERE id=$4`,
+      [balance, option, b.note ? String(b.note).trim() : null, d.id]);
+    await audit(d.id, req.user, 'complete_deal_awaiting_letter', 'deal', d.id, { balance, option, note: b.note || null });
+    await notify(['office'], d.id, 'Deal completed — balance letter needed',
+      `${d.ref} was marked complete. The manufacturer still holds ${balance.toFixed(2)} ${d.currency}; their balance letter must be attached.`, 'warn', req.user.id);
+    return res.json({ ok: true, status: 'completed', closure_state: 'awaiting_letter', balance });
+  }
+  await query(`UPDATE deals SET status='completed', completed_at=NOW(), closure_state='closed',
+    closure_balance=0, closure_option=NULL, closure_note=NULL, closed_at=NOW() WHERE id=$1`, [d.id]);
+  await audit(d.id, req.user, 'complete_deal', 'deal', d.id, {});
+  await notify(['office'], d.id, 'Deal completed', `${d.ref} was marked complete.`, 'ok', req.user.id);
+  res.json({ ok: true, status: 'completed', closure_state: 'closed' });
+}));
+app.post('/api/deals/:id/reopen', requireAuth, requireRole('admin'), wrap(async (req, res) => {
+  const d = await getDeal(Number(req.params.id));
+  if (!d) return res.status(404).json({ error: 'Deal not found.' });
+  if (!['completed', 'archived'].includes(d.status)) return res.status(409).json({ error: `Cannot reopen a deal in "${d.status}" state.` });
+  await query(`UPDATE deals SET status='active', completed_at=NULL, closure_state=NULL, closure_balance=NULL,
+    closure_option=NULL, closure_note=NULL, closed_at=NULL WHERE id=$1`, [d.id]);
+  await audit(d.id, req.user, 'reopen_deal', 'deal', d.id, {});
+  res.json({ ok: true, status: 'active' });
+}));
+// Change how the open balance is settled (refund to us, or transfer to other deals).
+app.post('/api/deals/:id/closure', requireAuth, requireRole('admin'), wrap(async (req, res) => {
+  const d = await getDeal(Number(req.params.id));
+  if (!d) return res.status(404).json({ error: 'Deal not found.' });
+  if (d.closure_state !== 'awaiting_letter') return res.status(409).json({ error: 'This deal is not waiting for a balance letter.' });
+  const b = req.body || {};
+  if (!CLOSURE_OPTIONS.includes(b.option)) return res.status(400).json({ error: 'Choose refund or transfer.' });
+  await query('UPDATE deals SET closure_option=$1, closure_note=$2 WHERE id=$3', [b.option, b.note ? String(b.note).trim() : null, d.id]);
+  await audit(d.id, req.user, 'set_closure_option', 'deal', d.id, { option: b.option, note: b.note || null });
+  res.json({ ok: true });
+}));
+/* After any change to the letter documents: close the deal when an approved
+   letter exists, or put it back to "awaiting letter" if the letter is removed. */
+async function syncClosure(dealId, user) {
+  const d = await getDeal(dealId);
+  if (!d || d.status !== 'completed' || !d.closure_state || d.closure_state === 'closed' && !Number(d.closure_balance)) return;
+  const approved = (await query("SELECT id FROM documents WHERE deal_id=$1 AND category=$2 AND status='approved'", [dealId, LETTER_CATEGORY])).rows.length;
+  if (approved && d.closure_state === 'awaiting_letter') {
+    await query("UPDATE deals SET closure_state='closed', closed_at=NOW() WHERE id=$1", [dealId]);
+    await audit(dealId, user, 'deal_closed_with_letter', 'deal', dealId, { balance: Number(d.closure_balance) });
+    await notify(['office'], dealId, 'Deal fully closed', `${d.ref}: the manufacturer's balance letter is attached. The deal is closed.`, 'ok', user && user.id);
+  } else if (!approved && d.closure_state === 'closed' && Number(d.closure_balance) > eps) {
+    await query("UPDATE deals SET closure_state='awaiting_letter', closed_at=NULL WHERE id=$1", [dealId]);
+    await audit(dealId, user, 'deal_reopened_letter_removed', 'deal', dealId, {});
+  }
+}
 app.post('/api/deals/:id/archive', requireAuth, requireRole('admin'), lifecycle('archive', ['active', 'completed'], 'archived'));
 app.post('/api/deals/:id/delete', requireAuth, requireRole('admin'), lifecycle('delete', ['archived'], 'deleted'));
 app.post('/api/deals/:id/purge', requireAuth, requireRole('admin'), wrap(async (req, res) => {
@@ -520,6 +587,10 @@ app.post('/api/deals/:id/documents', requireAuth, requireRole('admin', 'office')
       b.link_type || null, b.link_id ? Number(b.link_id) : null, status, req.user.id]
   )).rows[0].id;
   await audit(d.id, req.user, 'upload_document', 'document', id, { name: req.file.originalname, category: b.category });
+  if ((b.category || '') === LETTER_CATEGORY) {
+    if (status === 'approved') await syncClosure(d.id, req.user);
+    else await notify(['admin'], d.id, 'Balance letter uploaded', `${d.ref}: a manufacturer balance letter was uploaded and needs your approval to close the deal.`, 'approval', req.user.id);
+  }
   res.json({ id, status });
 }));
 app.patch('/api/documents/:id', requireAuth, requireRole('admin'), wrap(async (req, res) => {
@@ -529,6 +600,7 @@ app.patch('/api/documents/:id', requireAuth, requireRole('admin'), wrap(async (r
   if (!doc) return res.status(404).json({ error: 'Document not found.' });
   await query('UPDATE documents SET status=$1 WHERE id=$2', [status, doc.id]);
   await audit(doc.deal_id, req.user, 'set_document_status', 'document', doc.id, { status });
+  await syncClosure(doc.deal_id, req.user);
   res.json({ ok: true });
 }));
 app.get('/api/documents/:id/file', requireAuth, wrap(async (req, res) => {
@@ -651,6 +723,7 @@ app.delete('/api/documents/:id', requireAuth, requireRole('admin'), wrap(async (
   if (!doc) return res.status(404).json({ error: 'Document not found.' });
   await query('DELETE FROM documents WHERE id=$1', [doc.id]);
   await audit(doc.deal_id, req.user, 'delete_document', 'document', doc.id, { name: doc.original_name, category: doc.category });
+  await syncClosure(doc.deal_id, req.user);
   res.json({ ok: true });
 }));
 

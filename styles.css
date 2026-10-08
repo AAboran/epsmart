@@ -801,3 +801,41 @@ td .btn.sm + .btn.sm { margin-left: 4px; }
 .rep-item { display: flex; gap: 9px; align-items: flex-start; padding: 6px 0; font-size: 13.5px; cursor: pointer; font-weight: 400; }
 .rep-item input { width: 18px; min-height: 18px; height: 18px; margin-top: 1px; flex: none; }
 .rep-text { min-height: 320px; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; line-height: 1.55; white-space: pre-wrap; }
+
+/* ============================================================
+   ZOOM — the app is scaled with CSS zoom; viewport-height
+   layouts are compensated so the sidebar still fills the screen.
+   ============================================================ */
+.app { min-height: calc(100vh / var(--z, 1)); }
+.sidebar { height: calc(100vh / var(--z, 1)); }
+.login { min-height: calc(100vh / var(--z, 1)); }
+.zoomctl { display: inline-flex; align-items: stretch; border: 1px solid var(--border-strong); border-radius: 10px; overflow: hidden; background: #fff; }
+.zoomctl button { border: 0; background: none; min-width: 40px; min-height: 40px; font-size: 17px; font-weight: 700; color: var(--navy); cursor: pointer; }
+.zoomctl button:hover { background: var(--surface-2); }
+.zoomctl button:focus-visible { outline: 3px solid rgba(201,164,65,0.5); outline-offset: -3px; }
+#zm-reset { font-size: 12.5px; min-width: 56px; border-left: 1px solid var(--border); border-right: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+@media (max-width: 520px) { #zm-reset { min-width: 46px; } .zoomctl button { min-width: 36px; } }
+
+/* ============================================================
+   COMPLETION & MANUFACTURER BALANCE LETTERS
+   ============================================================ */
+.closure-panel { border-radius: 14px; padding: 16px 18px; margin: 4px 0 16px; border: 1px solid; }
+.closure-panel.open { background: linear-gradient(180deg, #fffaf0, #fdf3e2); border-color: #f0d49c; }
+.closure-panel.done { background: var(--green-soft); border-color: #bfe0c9; }
+.cp-head { font-size: 15px; color: var(--navy); line-height: 1.5; }
+.cp-state { display: inline-block; font-size: 11px; font-weight: 750; text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 3px 10px; border-radius: 999px; margin-right: 8px; vertical-align: 2px; }
+.closure-panel.open .cp-state { background: var(--amber); color: #fff; }
+.closure-panel.done .cp-state { background: var(--green); color: #fff; }
+.cp-body { font-size: 13.5px; color: var(--muted); margin-top: 6px; }
+.cp-files { margin-top: 10px; font-size: 13.5px; line-height: 2; }
+.closure-badge { border-radius: 10px; padding: 9px 12px; margin: 0 0 10px; font-size: 12.5px; line-height: 1.45; }
+.closure-badge b { display: block; font-size: 13.5px; }
+.closure-badge span { color: var(--muted); }
+.closure-badge.open { background: var(--amber-soft); border: 1px solid #f5d9a8; }
+.closure-badge.open b { color: var(--amber); }
+.closure-badge.done { background: var(--green-soft); border: 1px solid #c9ecd3; }
+.closure-badge.done b { color: var(--green); }
+.letter-alert a { font-weight: 700; margin-left: 6px; }
+.stat .value.amber { color: var(--amber); }
+.stat .value.green { color: var(--green); }
