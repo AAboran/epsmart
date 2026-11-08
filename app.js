@@ -425,16 +425,16 @@ async function renderDeal() {
 
   shell(deal.ref, `
     ${roBanner}${pendBanner}${frontBanner}
-    <div class="dh">
-      <div class="dh-main">
+    <div class="dhx">
+      <div class="dhx-id">
         <div class="dh-ref">${esc(deal.ref)} <span class="pill ${deal.status === 'active' ? 'blue' : deal.status === 'completed' ? 'green' : 'gray'}">${esc(deal.status)}</span></div>
         <h2>${esc(deal.title)}</h2>
         <div class="dh-parties">${esc(deal.customer_name)} <span>·</span> ${esc(deal.supplier_name)}</div>
         ${invoiceNumbers(deal)}
       </div>
-      ${!ro ? `<div class="dh-next ${naClass}"><span>Next step</span><b>${esc(na.label)}</b></div>` : ''}
+      ${dealProgress(d)}
     </div>
-    ${closurePanel(d)}
+    <div id="sec-closure">${closurePanel(d)}</div>
     ${keyFacts(d)}
     ${!ro && canWrite() ? `<div class="actionbar">
       ${isAdmin() ? `<button class="btn primary" id="q-received">${icon('in')} Payment in</button>
@@ -446,9 +446,9 @@ async function renderDeal() {
 
     <div class="deal-cols">
       <div class="deal-col">
-        ${paymentsCard(d, cur, ro)}
-        ${deliveryCard(d, cur)}
-        ${discountsCard(d, ro)}
+        <div id="sec-payments">${paymentsCard(d, cur, ro)}</div>
+        <div id="sec-deliveries">${deliveryCard(d, cur)}</div>
+        <div id="sec-discounts">${discountsCard(d, ro)}</div>
       </div>
       <div class="deal-col side">
         ${flowsCard(d)}
@@ -457,7 +457,7 @@ async function renderDeal() {
           ${uploadTile(d, 'Our invoice to client', 'Customer invoices', '🧾', ro)}
           ${uploadTile(d, 'Delivery invoices', 'Delivery notes', '🚚', ro)}
         </div>`)}
-        ${accountsCard(d)}
+        <div id="sec-accounts">${accountsCard(d)}</div>
       </div>
     </div>
 
@@ -472,6 +472,7 @@ async function renderDeal() {
   wireDeal(d);
   wireFlowsCard();
   wireAccounts();
+  wireProgress(d);
   wireDiagram();
   wireDiscounts(d);
   const mb = document.getElementById('more-btn'), mm = document.getElementById('more-menu');
@@ -1160,6 +1161,116 @@ function wireAccounts() {
   document.querySelectorAll('[data-acctab]').forEach((b) => (b.onclick = () => {
     document.querySelectorAll('[data-acctab]').forEach((x) => { const on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-selected', String(on)); });
     document.querySelectorAll('[data-accpane]').forEach((p) => p.classList.toggle('hidden', p.dataset.accpane !== b.dataset.acctab));
+  }));
+}
+
+/* ================= DEAL PROGRESS — journey + open items =================
+   Where the deal stands in its life, and exactly what is still unresolved,
+   each with a one-click way to deal with it. */
+function dealProgress(d) {
+  const deal = d.deal, c = d.computed, cur = deal.currency, admin = isAdmin();
+  const m = (v) => money(v, cur);
+  const ro = deal.status !== 'active';
+  const posted = (arr) => (arr || []).filter((x) => x.status === 'posted');
+  const docs = d.documents || [];
+  const hasDoc = (cat) => docs.some((x) => x.category === cat);
+  const linked = (type, id) => docs.some((x) => x.link_type === type && x.link_id === id);
+  const invNet = c.invoiceNet != null ? c.invoiceNet : Number(deal.invoice_total) || 0;
+  const paidOut = c.totalPaidToSupplier || 0;
+  const supBase = admin ? (c.supplierOwed || 0) : Number(deal.proforma_total) || 0;
+  const pctOf = (a, b) => (b > 0 ? (a / b) * 100 : 0);
+  const closed = deal.status === 'completed' && deal.closure_state === 'closed';
+
+  // ---- journey
+  const step = (key, label, state, p, sub, go, tip) => ({ key, label, state, p, sub, go, tip });
+  const recvP = pctOf(c.totalReceived, invNet), outP = pctOf(paidOut, supBase), delP = c.deliveryPct || 0;
+  const st = (p, over) => (over ? 'warn' : p >= 99.995 ? 'done' : p > 0.005 ? 'part' : 'todo');
+  const steps = [
+    step('proforma', 'Proforma', Number(deal.proforma_total) > 0 ? 'done' : 'todo', 100,
+      deal.proforma_number ? esc(deal.proforma_number) : m(deal.proforma_total), 'sec-accounts', `Supplier proforma ${m(deal.proforma_total)}`),
+    step('invoice', 'Invoice', Number(deal.invoice_total) > 0 ? 'done' : 'todo', 100,
+      deal.invoice_number ? esc(deal.invoice_number) : m(deal.invoice_total), 'sec-accounts', `Invoice to client ${m(deal.invoice_total)}${c.clientDiscount > 0.005 ? `, ${m(invNet)} after discount` : ''}`),
+    step('in', admin ? 'Client paid' : 'You paid', st(recvP, c.customerOverpayment > 0.005), recvP,
+      c.customerOverpayment > 0.005 ? `overpaid ${m(c.customerOverpayment)}` : c.customerBalance > 0.005 ? `${m(c.customerBalance)} left` : 'paid in full', 'sec-payments',
+      `${m(c.totalReceived)} of ${m(invNet)}`),
+    ...(admin ? [step('out', 'Supplier paid', st(outP, c.supplierOverpaid > 0.005), outP,
+      c.supplierOverpaid > 0.005 ? `overpaid ${m(c.supplierOverpaid)}` : c.supplierOpenToPay > 0.005 ? `${m(c.supplierOpenToPay)} left` : 'paid in full', 'sec-payments',
+      `${m(paidOut)} of ${m(supBase)}`)] : []),
+    step('goods', 'Delivered', st(delP, c.overDelivery > 0.005), delP,
+      c.overDelivery > 0.005 ? `over by ${m(c.overDelivery)}` : c.deliveryOutstanding > 0.005 ? `${m(c.deliveryOutstanding)} to go` : 'all delivered', 'sec-deliveries',
+      `${m(c.deliveredValue)} of ${m(deal.proforma_total)} proforma`),
+    step('closed', 'Closed', closed ? 'done' : deal.status === 'completed' ? 'part' : 'todo', deal.status === 'completed' ? 50 : 0,
+      closed ? fdate(deal.closed_at || deal.completed_at) : deal.closure_state === 'awaiting_letter' ? 'awaiting letter' : 'open', null,
+      closed ? 'Completed and closed' : deal.closure_state === 'awaiting_letter' ? "Completed — waiting for the manufacturer's balance letter" : 'Not completed yet'),
+  ];
+  const done = steps.filter((x) => x.state === 'done').length;
+  const check = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+  const journey = `<ol class="stepper" style="--n:${steps.length}" aria-label="Deal progress">
+    ${steps.map((x) => `<li class="st ${x.state}" ${x.go ? `data-go="${x.go}" tabindex="0" role="button"` : ''} title="${esc(x.tip)}">
+      <span class="st-dot" style="--p:${Math.max(0, Math.min(100, x.p)).toFixed(1)}">${x.state === 'done' ? check : x.state === 'warn' ? '!' : x.state === 'part' && x.key !== 'closed' ? Math.min(99, Math.round(x.p)) + '%' : ''}</span>
+      <span class="st-l">${x.label}</span><span class="st-s">${x.sub}</span></li>`).join('')}
+  </ol>`;
+
+  // ---- open items (most important first)
+  const items = [];
+  const add = (level, text, action, label) => items.push({ level, text, action, label });
+  if (deal.closure_state === 'awaiting_letter') add('due', `Manufacturer still holds ${m(deal.closure_balance)} — attach their balance letter`, 'go:sec-closure', 'Open');
+  if (admin && c.companyMoneyFronted > 0.005) add('alert', `${m(c.companyMoneyFronted)} paid to the supplier before the client paid it`, 'go:sec-payments', 'Review');
+  if (c.customerBalance > 0.005) add('due', admin ? `Client still owes ${m(c.customerBalance)}` : `You still owe ${m(c.customerBalance)}`, admin && !ro ? 'pay-in' : 'go:sec-accounts', admin && !ro ? 'Payment in' : 'View');
+  if (c.customerOverpayment > 0.005) add('info', `Client overpaid ${m(c.customerOverpayment)} — refund or carry over`, 'go:sec-accounts', 'View');
+  if (admin && c.supplierOpenToPay > 0.005) add('due', `${m(c.supplierOpenToPay)} still to pay the supplier`, !ro ? 'pay-out' : 'go:sec-accounts', !ro ? 'Payment out' : 'View');
+  if (admin && c.supplierOverpaid > 0.005) add('info', `Supplier owes us ${m(c.supplierOverpaid)}`, 'go:sec-accounts', 'View');
+  if (c.overDelivery > 0.005) add('alert', `Delivered ${m(c.overDelivery)} more than the proforma`, 'go:sec-deliveries', 'Check');
+  else if (c.deliveryOutstanding > 0.005) add('info', `${m(c.deliveryOutstanding)} of goods still to be delivered`, !ro && canWrite() ? 'delivery' : 'go:sec-deliveries', !ro && canWrite() ? 'Add delivery' : 'View');
+  if (admin) {
+    const noProof = posted(d.customerPayments).filter((p) => !linked('customer_payment', p.id)).length
+      + posted(d.supplierPayments).filter((p) => !linked('supplier_payment', p.id)).length;
+    if (noProof) add('doc', `${noProof} payment${noProof === 1 ? '' : 's'} without proof attached`, 'go:sec-payments', 'Attach');
+    const discNoDoc = posted(d.discounts).filter((x) => Number(x.client_amount) > 0 && !linked('discount_client', x.id)).length;
+    if (discNoDoc) add('doc', `Our discount document to the client is missing`, 'go:sec-discounts', 'Attach');
+    if (!hasDoc('Supplier proformas')) add('doc', 'Supplier proforma file not uploaded', !ro ? 'upload:Supplier proformas' : null, 'Upload');
+    if (!hasDoc('Customer invoices')) add('doc', 'Our invoice to the client not uploaded', !ro ? 'upload:Customer invoices' : null, 'Upload');
+    if (!deal.proforma_number || !deal.invoice_number) add('doc', `Add the ${!deal.proforma_number && !deal.invoice_number ? 'proforma and invoice numbers' : !deal.proforma_number ? 'proforma number' : 'invoice number'}`, 'edit', 'Edit');
+  }
+  if ((d.pendingApprovals || []).length) add('info', `${d.pendingApprovals.length} submission${d.pendingApprovals.length === 1 ? '' : 's'} awaiting approval`, admin ? 'approvals' : null, admin ? 'Review' : '');
+
+  const icons = { due: '€', alert: '!', doc: '◫', info: 'i' };
+  const MAXV = 5;
+  const list = items.map((x, i) => `<li class="oi ${x.level} ${i >= MAXV ? 'more hidden' : ''}">
+      <span class="oi-ic" aria-hidden="true">${icons[x.level]}</span><span class="oi-t">${x.text}</span>
+      ${x.action && x.label ? `<button type="button" class="btn sm" data-todo="${esc(x.action)}">${x.label}</button>` : ''}</li>`).join('');
+  const ready = !items.length && deal.status === 'active';
+  const openBox = items.length
+    ? `<div class="oi-h"><span>Open items</span><b>${items.length}</b></div><ul class="oi-list">${list}</ul>
+       ${items.length > MAXV ? `<button type="button" class="oi-more" id="oi-more">Show ${items.length - MAXV} more</button>` : ''}`
+    : `<div class="oi-clear"><span class="oi-ok">${check}</span><div><b>${closed ? 'Deal closed — nothing open' : 'Nothing open on this deal'}</b>
+       <span>${ready && admin ? 'Payments, deliveries and documents are all in order.' : 'Everything is settled.'}</span></div>
+       ${ready && admin ? `<button type="button" class="btn primary sm" data-todo="complete">Mark complete</button>` : ''}</div>`;
+
+  return `<div class="dhx-prog">
+    <div class="dhx-journey"><div class="oi-h"><span>Deal journey</span><b>${done}/${steps.length}</b></div>${journey}</div>
+    <div class="dhx-open">${openBox}</div>
+  </div>`;
+}
+function wireProgress(d) {
+  const deal = d.deal;
+  const jump = (id) => { const el = document.getElementById(id); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1400); } };
+  document.querySelectorAll('.stepper [data-go]').forEach((el) => {
+    el.onclick = () => jump(el.dataset.go);
+    el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); jump(el.dataset.go); } };
+  });
+  const more = document.getElementById('oi-more');
+  if (more) more.onclick = () => { document.querySelectorAll('.oi.more').forEach((x) => x.classList.remove('hidden')); more.remove(); };
+  document.querySelectorAll('[data-todo]').forEach((b) => (b.onclick = () => {
+    const a = b.dataset.todo;
+    if (a.startsWith('go:')) return jump(a.slice(3));
+    if (a.startsWith('upload:')) return quickUpload(deal.id, a.slice(7));
+    if (a === 'pay-in') return custPayModal(deal, d.computed);
+    if (a === 'pay-out') return suppPayModal(deal, d);
+    if (a === 'delivery') return suppInvModal(deal, d.computed);
+    if (a === 'edit') return dealDetailsModal(deal.id, () => renderDeal());
+    if (a === 'approvals') return go('approvals');
+    if (a === 'complete') return completeDeal(deal);
   }));
 }
 
@@ -2780,7 +2891,7 @@ function purgeModal(id, ref) {
 /* ================= DEAL DETAILS (name, parties, invoice numbers) ================= */
 function invoiceNumbers(d) {
   const p = (d.proforma_number || '').trim(), i = (d.invoice_number || '').trim();
-  if (!p && !i) return isAdmin() ? `<div class="inv-nums empty">No invoice numbers yet — use ✎ to add them</div>` : '';
+  if (!p && !i) return isAdmin() ? `<div class="inv-nums none">No invoice numbers yet — use Edit to add them</div>` : '';
   return `<div class="inv-nums">${p ? `<span title="Supplier proforma number"><em>Proforma</em> ${esc(p)}</span>` : ''}${i ? `<span title="Our invoice number to the client"><em>Invoice</em> ${esc(i)}</span>` : ''}</div>`;
 }
 /* Edit what a deal is called — allowed any time, also on completed deals. */
