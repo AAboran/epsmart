@@ -131,6 +131,7 @@ function renderLogin() {
 
 /* ================= SHELL ================= */
 function shell(title, bodyHtml, actionsHtml = '') {
+  document.body.classList.remove('flows-max-open');
   const pendingBadge = State._pendingCount ? `<span class="badge">${State._pendingCount}</span>` : '';
   const nav = [
     ['deals', 'Deals'],
@@ -264,7 +265,7 @@ function dealCard(d) {
       <div class="dcard-parties">${esc(d.customer_name)} <span>·</span> ${esc(d.supplier_name)}</div>
       ${invoiceNumbers(d)}
       <div class="dcard-figs">
-        <div><span>Deal value</span><b>${money(invoice, cur)}</b></div>
+        <div><span>Invoice</span><b>${money(Number(d.invoice_total) || 0, cur)}</b>${(c.clientDiscount || 0) > 0.005 ? `<small>after discount ${money(invoice, cur)}</small>` : ''}</div>
         ${isAdmin()
           ? `<div class="gold"><span>Our income</span><b>${money(c.feeTotal, cur)}</b></div>`
           : `<div class="gold"><span>4% fee paid</span><b>${money(c.feePaid, cur)}</b></div>`}
@@ -456,6 +457,7 @@ async function renderDeal() {
           ${uploadTile(d, 'Our invoice to client', 'Customer invoices', '🧾', ro)}
           ${uploadTile(d, 'Delivery invoices', 'Delivery notes', '🚚', ro)}
         </div>`)}
+        ${accountsCard(d)}
       </div>
     </div>
 
@@ -469,6 +471,7 @@ async function renderDeal() {
 
   wireDeal(d);
   wireFlowsCard();
+  wireAccounts();
   wireDiagram();
   wireDiscounts(d);
   const mb = document.getElementById('more-btn'), mm = document.getElementById('more-menu');
@@ -702,38 +705,177 @@ async function iconDataUrl() {
   return State._iconData;
 }
 
+/* Report texts in English, Slovak and Russian. Functions take the values to insert. */
+const REPORT_I18N = {
+  en: {
+    title: 'Deal report', asAt: 'As at', internal: 'Internal version', shareable: 'Shareable version',
+    invoiceToClient: 'Invoice to client', afterDisc: (x) => `after discount ${x}`, noDisc: 'no discount',
+    received: 'Received from client', payments: (n) => `${n} payment${n === 1 ? '' : 's'}`,
+    stillDue: 'Still due from client', clientCredit: (x) => `client credit ${x}`, outstanding: 'outstanding', fullyPaid: 'fully paid',
+    paidToSupplier: 'Paid to supplier', supOwesUs: (x) => `supplier owes us ${x}`, stillToPay: (x) => `${x} still to pay`,
+    delivered: 'Goods delivered', ofProforma: (p, x) => `${p} of proforma · ${x} to go`,
+    europaIncome: 'Europa income', earned: (a, b) => `${a} earned · ${b} to come`,
+    agreedFee: 'Agreed 4% fee', coveredBy: (x) => `${x} covered by payments`,
+    parties: 'Parties and references', client: 'Client', supplier: 'Supplier', dealRef: 'Deal reference',
+    proformaNo: 'Supplier proforma number', invoiceNo: 'Our invoice number', opened: 'Opened', status: 'Status', completed: 'Completed',
+    stActive: 'Active', stClosed: 'Completed and closed', stAwait: (x) => `Completed — awaiting manufacturer balance letter (${x})`,
+    stClosedLetter: (x) => `Closed — manufacturer balance ${x} confirmed by letter`,
+    dealValue: 'Deal value', supProforma: 'Supplier proforma', lessSupDisc: 'Less: discounts from supplier', proformaAfter: 'Proforma after discounts',
+    lessCliDisc: 'Less: discounts to client', invoiceAfter: 'Invoice after discounts',
+    incomeRow: 'Europa income (invoice − proforma)', onProforma: 'on proforma', feeRow: 'Of which: agreed 4% fee',
+    keptRow: 'Of which kept from supplier discounts', givenRow: 'Of which given above supplier discounts',
+    payIn: 'Payments received from the client', date: 'Date', amount: 'Amount', reference: 'Reference', totalReceived: 'Total received',
+    balanceAfter: 'Balance after', total: 'Total', noPayIn: 'No payments received yet.',
+    payOut: 'Payments sent to the supplier', forwarding: 'Forwarding client payment of', totalPaid: 'Total paid', stillToPayAfter: 'Still to pay after',
+    noPayOut: 'No payments sent to the supplier yet.', fwdNote: 'Forwarded per client payment', sentToSup: (x) => `${x} sent to supplier`,
+    deliveries: 'Deliveries (proforma value)', delInvoice: 'Delivery invoice', proformaValue: 'Proforma value', quantity: 'Quantity',
+    deliveredSoFar: 'Delivered so far', stillToDeliver: 'Still to deliver', noDel: 'No deliveries yet.',
+    discounts: 'Discounts', fromSupplier: 'From supplier', supDoc: 'Supplier document', toClient: 'To client', ourDoc: 'Our document',
+    discount: 'Discount', creditNote: 'Credit note',
+    checks: 'Balances and checks',
+    ckClient: 'Client balance:', ckClientOver: (x) => `the client has overpaid by ${x} (credit in their favour).`,
+    ckClientDue: (x) => `${x} is still due from the client.`, ckClientPaid: 'the client has paid in full.',
+    ckCliGoods: 'Client payments vs goods received:', ckCliGoodsDue: (a, b) => `goods worth ${a} have been received; ${b} of that is not yet paid.`,
+    ckCliGoodsAhead: (x) => `the client has paid ${x} ahead of deliveries.`, ckCliGoodsOk: 'payments match the goods received.',
+    ckSup: 'Supplier balance:', ckSupOver: (x) => `we have paid ${x} more than the proforma after discounts — the supplier owes us this amount.`,
+    ckSupOpen: (x) => `${x} is still to be paid to the supplier.`, ckSupPaid: 'the supplier has been paid in full.',
+    ckSupGoods: 'Supplier payments vs goods delivered:', ckSupGoodsDue: (x) => `goods worth ${x} have been delivered but not yet paid for.`,
+    ckSupGoodsAhead: (x) => `${x} has been paid ahead of deliveries.`, ckSupGoodsOk: 'payments match the goods delivered.',
+    ckCash: 'Cash position:', ckCashText: (a, b) => `${a} is held now (received − paid out); ${b} of it is Europa income earned so far.`,
+    ckFronted: (x) => ` Company money fronted: ${x}.`,
+    ckDel: 'Deliveries:', ckDelOpen: (p, x) => `${p} delivered; goods worth ${x} (proforma value) are still to be delivered.`, ckDelDone: 'all goods on the proforma have been delivered.',
+    timeline: 'Timeline', event: 'Event', details: 'Details', evIn: 'Payment received', evOut: 'Payment sent', evDel: 'Delivery', evDisc: 'Discount',
+    from: (x) => `from ${x}`, to: (x) => `to ${x}`, onInvoice: 'on the invoice', supClient: (a) => `supplier ${a} / client`, noActivity: 'No activity yet.',
+    footer: (st, by, cur) => `Prepared from the records in Europa Deal Control on ${st}${by ? ` by ${by}` : ''}. All amounts in ${cur}. Entries awaiting approval are not included. Balances are shown against the invoice after discounts.`,
+    group: 'Europa Pharmaceutical s. r. o. — part of the Boran&Co Group.',
+  },
+  sk: {
+    title: 'Správa o obchode', asAt: 'Stav k', internal: 'Interná verzia', shareable: 'Verzia na zdieľanie',
+    invoiceToClient: 'Faktúra klientovi', afterDisc: (x) => `po zľave ${x}`, noDisc: 'bez zľavy',
+    received: 'Prijaté od klienta', payments: (n) => `${n} ${n === 1 ? 'platba' : n >= 2 && n <= 4 ? 'platby' : 'platieb'}`,
+    stillDue: 'Zostáva uhradiť klientom', clientCredit: (x) => `preplatok klienta ${x}`, outstanding: 'neuhradené', fullyPaid: 'uhradené v plnej výške',
+    paidToSupplier: 'Zaplatené dodávateľovi', supOwesUs: (x) => `dodávateľ nám dlhuje ${x}`, stillToPay: (x) => `zostáva zaplatiť ${x}`,
+    delivered: 'Dodaný tovar', ofProforma: (p, x) => `${p} z proformy · zostáva ${x}`,
+    europaIncome: 'Príjem Europa', earned: (a, b) => `zarobené ${a} · ešte príde ${b}`,
+    agreedFee: 'Dohodnutý 4 % poplatok', coveredBy: (x) => `${x} uhradené platbami`,
+    parties: 'Strany a referencie', client: 'Klient', supplier: 'Dodávateľ', dealRef: 'Číslo obchodu',
+    proformaNo: 'Číslo proformy dodávateľa', invoiceNo: 'Číslo našej faktúry', opened: 'Otvorené', status: 'Stav', completed: 'Ukončené',
+    stActive: 'Aktívny', stClosed: 'Ukončený a uzavretý', stAwait: (x) => `Ukončený — čaká sa na list výrobcu o zostatku (${x})`,
+    stClosedLetter: (x) => `Uzavretý — zostatok ${x} potvrdený listom výrobcu`,
+    dealValue: 'Hodnota obchodu', supProforma: 'Proforma dodávateľa', lessSupDisc: 'Mínus: zľavy od dodávateľa', proformaAfter: 'Proforma po zľavách',
+    lessCliDisc: 'Mínus: zľavy pre klienta', invoiceAfter: 'Faktúra po zľavách',
+    incomeRow: 'Príjem Europa (faktúra − proforma)', onProforma: 'z proformy', feeRow: 'Z toho: dohodnutý 4 % poplatok',
+    keptRow: 'Z toho ponechané zo zliav dodávateľa', givenRow: 'Z toho poskytnuté nad rámec zliav dodávateľa',
+    payIn: 'Platby prijaté od klienta', date: 'Dátum', amount: 'Suma', reference: 'Referencia', totalReceived: 'Prijaté spolu',
+    balanceAfter: 'Zostatok po platbe', total: 'Spolu', noPayIn: 'Zatiaľ neboli prijaté žiadne platby.',
+    payOut: 'Platby odoslané dodávateľovi', forwarding: 'Z platby klienta zo dňa', totalPaid: 'Zaplatené spolu', stillToPayAfter: 'Zostáva zaplatiť',
+    noPayOut: 'Dodávateľovi zatiaľ neboli odoslané žiadne platby.', fwdNote: 'Preposlané z jednotlivých platieb klienta', sentToSup: (x) => `${x} odoslané dodávateľovi`,
+    deliveries: 'Dodávky (hodnota podľa proformy)', delInvoice: 'Faktúra k dodávke', proformaValue: 'Hodnota podľa proformy', quantity: 'Množstvo',
+    deliveredSoFar: 'Dodané doteraz', stillToDeliver: 'Zostáva dodať', noDel: 'Zatiaľ žiadne dodávky.',
+    discounts: 'Zľavy', fromSupplier: 'Od dodávateľa', supDoc: 'Doklad dodávateľa', toClient: 'Klientovi', ourDoc: 'Náš doklad',
+    discount: 'Zľava', creditNote: 'Dobropis',
+    checks: 'Zostatky a kontroly',
+    ckClient: 'Zostatok klienta:', ckClientOver: (x) => `klient preplatil ${x} (preplatok v jeho prospech).`,
+    ckClientDue: (x) => `klient musí ešte uhradiť ${x}.`, ckClientPaid: 'klient zaplatil v plnej výške.',
+    ckCliGoods: 'Platby klienta voči prijatému tovaru:', ckCliGoodsDue: (a, b) => `prijatý tovar v hodnote ${a}; z toho ${b} ešte nie je uhradené.`,
+    ckCliGoodsAhead: (x) => `klient zaplatil ${x} vopred, pred dodávkami.`, ckCliGoodsOk: 'platby zodpovedajú prijatému tovaru.',
+    ckSup: 'Zostatok dodávateľa:', ckSupOver: (x) => `zaplatili sme o ${x} viac, ako je proforma po zľavách — dodávateľ nám túto sumu dlhuje.`,
+    ckSupOpen: (x) => `dodávateľovi zostáva zaplatiť ${x}.`, ckSupPaid: 'dodávateľ je zaplatený v plnej výške.',
+    ckSupGoods: 'Platby dodávateľovi voči dodanému tovaru:', ckSupGoodsDue: (x) => `tovar v hodnote ${x} bol dodaný, ale ešte nie je zaplatený.`,
+    ckSupGoodsAhead: (x) => `${x} bolo zaplatené vopred, pred dodávkami.`, ckSupGoodsOk: 'platby zodpovedajú dodanému tovaru.',
+    ckCash: 'Hotovostná pozícia:', ckCashText: (a, b) => `aktuálne držíme ${a} (prijaté − odoslané); z toho ${b} je doteraz zarobený príjem Europa.`,
+    ckFronted: (x) => ` Vlastné prostriedky spoločnosti vložené: ${x}.`,
+    ckDel: 'Dodávky:', ckDelOpen: (p, x) => `dodané ${p}; zostáva dodať tovar v hodnote ${x} (podľa proformy).`, ckDelDone: 'všetok tovar z proformy bol dodaný.',
+    timeline: 'Časová os', event: 'Udalosť', details: 'Podrobnosti', evIn: 'Prijatá platba', evOut: 'Odoslaná platba', evDel: 'Dodávka', evDisc: 'Zľava',
+    from: (x) => `od ${x}`, to: (x) => `príjemca ${x}`, onInvoice: 'na faktúre', supClient: (a) => `dodávateľ ${a} / klient`, noActivity: 'Zatiaľ žiadna aktivita.',
+    footer: (st, by, cur) => `Vypracované zo záznamov v systéme Europa Deal Control dňa ${st}${by ? `, vypracoval: ${by}` : ''}. Všetky sumy sú v ${cur}. Položky čakajúce na schválenie nie sú zahrnuté. Zostatky sú uvedené voči faktúre po zľavách.`,
+    group: 'Europa Pharmaceutical s. r. o. — súčasť skupiny Boran&Co Group.',
+  },
+  ru: {
+    title: 'Отчёт по сделке', asAt: 'По состоянию на', internal: 'Внутренняя версия', shareable: 'Версия для передачи',
+    invoiceToClient: 'Инвойс клиенту', afterDisc: (x) => `с учётом скидки ${x}`, noDisc: 'без скидки',
+    received: 'Получено от клиента', payments: (n) => `${n} ${ruPlural(n, 'платёж', 'платежа', 'платежей')}`,
+    stillDue: 'Остаток к оплате клиентом', clientCredit: (x) => `переплата клиента ${x}`, outstanding: 'не оплачено', fullyPaid: 'оплачено полностью',
+    paidToSupplier: 'Оплачено поставщику', supOwesUs: (x) => `поставщик должен нам ${x}`, stillToPay: (x) => `осталось оплатить ${x}`,
+    delivered: 'Поставлено товара', ofProforma: (p, x) => `${p} от проформы · осталось ${x}`,
+    europaIncome: 'Доход Europa', earned: (a, b) => `получено ${a} · ожидается ${b}`,
+    agreedFee: 'Согласованная комиссия 4%', coveredBy: (x) => `${x} покрыто платежами`,
+    parties: 'Стороны и реквизиты', client: 'Клиент', supplier: 'Поставщик', dealRef: 'Номер сделки',
+    proformaNo: 'Номер проформы поставщика', invoiceNo: 'Номер нашего инвойса', opened: 'Открыта', status: 'Статус', completed: 'Завершена',
+    stActive: 'Активна', stClosed: 'Завершена и закрыта', stAwait: (x) => `Завершена — ожидается письмо производителя об остатке (${x})`,
+    stClosedLetter: (x) => `Закрыта — остаток ${x} подтверждён письмом производителя`,
+    dealValue: 'Сумма сделки', supProforma: 'Проформа поставщика', lessSupDisc: 'Минус: скидки поставщика', proformaAfter: 'Проформа с учётом скидок',
+    lessCliDisc: 'Минус: скидки клиенту', invoiceAfter: 'Инвойс с учётом скидок',
+    incomeRow: 'Доход Europa (инвойс − проформа)', onProforma: 'от проформы', feeRow: 'В том числе: комиссия 4%',
+    keptRow: 'В том числе оставлено из скидок поставщика', givenRow: 'В том числе предоставлено сверх скидок поставщика',
+    payIn: 'Платежи, полученные от клиента', date: 'Дата', amount: 'Сумма', reference: 'Референс', totalReceived: 'Получено всего',
+    balanceAfter: 'Остаток после платежа', total: 'Итого', noPayIn: 'Платежей пока не поступало.',
+    payOut: 'Платежи, отправленные поставщику', forwarding: 'Из платежа клиента от', totalPaid: 'Оплачено всего', stillToPayAfter: 'Осталось оплатить',
+    noPayOut: 'Поставщику платежей пока не отправлялось.', fwdNote: 'Перечислено по платежам клиента', sentToSup: (x) => `${x} отправлено поставщику`,
+    deliveries: 'Поставки (по стоимости проформы)', delInvoice: 'Инвойс поставки', proformaValue: 'Стоимость по проформе', quantity: 'Количество',
+    deliveredSoFar: 'Поставлено всего', stillToDeliver: 'Осталось поставить', noDel: 'Поставок пока не было.',
+    discounts: 'Скидки', fromSupplier: 'От поставщика', supDoc: 'Документ поставщика', toClient: 'Клиенту', ourDoc: 'Наш документ',
+    discount: 'Скидка', creditNote: 'Кредит-нота',
+    checks: 'Остатки и сверка',
+    ckClient: 'Баланс клиента:', ckClientOver: (x) => `клиент переплатил ${x} (в его пользу).`,
+    ckClientDue: (x) => `клиенту осталось оплатить ${x}.`, ckClientPaid: 'клиент оплатил полностью.',
+    ckCliGoods: 'Платежи клиента и полученный товар:', ckCliGoodsDue: (a, b) => `получен товар на ${a}; из них ${b} ещё не оплачено.`,
+    ckCliGoodsAhead: (x) => `клиент оплатил ${x} авансом, до поставок.`, ckCliGoodsOk: 'платежи соответствуют полученному товару.',
+    ckSup: 'Баланс поставщика:', ckSupOver: (x) => `мы оплатили на ${x} больше проформы с учётом скидок — поставщик должен нам эту сумму.`,
+    ckSupOpen: (x) => `поставщику осталось оплатить ${x}.`, ckSupPaid: 'поставщику оплачено полностью.',
+    ckSupGoods: 'Платежи поставщику и поставленный товар:', ckSupGoodsDue: (x) => `товар на ${x} поставлен, но ещё не оплачен.`,
+    ckSupGoodsAhead: (x) => `${x} оплачено авансом, до поставок.`, ckSupGoodsOk: 'платежи соответствуют поставленному товару.',
+    ckCash: 'Денежная позиция:', ckCashText: (a, b) => `сейчас на счёте ${a} (получено − отправлено); из них ${b} — заработанный доход Europa.`,
+    ckFronted: (x) => ` Собственные средства компании вложены: ${x}.`,
+    ckDel: 'Поставки:', ckDelOpen: (p, x) => `поставлено ${p}; осталось поставить товар на ${x} (по стоимости проформы).`, ckDelDone: 'весь товар по проформе поставлен.',
+    timeline: 'Хронология', event: 'Событие', details: 'Детали', evIn: 'Получен платёж', evOut: 'Отправлен платёж', evDel: 'Поставка', evDisc: 'Скидка',
+    from: (x) => `от ${x}`, to: (x) => `получатель: ${x}`, onInvoice: 'по инвойсу', supClient: (a) => `поставщик ${a} / клиент`, noActivity: 'Операций пока нет.',
+    footer: (st, by, cur) => `Сформировано по данным Europa Deal Control ${st}${by ? `, сформировал: ${by}` : ''}. Все суммы в ${cur}. Записи, ожидающие утверждения, не включены. Остатки указаны относительно инвойса с учётом скидок.`,
+    group: 'Europa Pharmaceutical s. r. o. — входит в Boran&Co Group.',
+  },
+};
+
 function buildDealReport(d, o) {
   const deal = d.deal, c = d.computed, cur = deal.currency;
   const internal = !!o.internal;
-  const m = (v) => money(v, cur);
+  const lang = REPORT_I18N[o.lang] ? o.lang : 'en';
+  const T = REPORT_I18N[lang];
+  const locale = { en: 'en-US', sk: 'sk-SK', ru: 'ru-RU' }[lang];
+  const m = (v) => (lang === 'en' ? money(v, cur)
+    : new Intl.NumberFormat(locale, { style: 'currency', currency: cur || 'EUR' }).format(Number(v) || 0));
+  const pc = (v) => (lang === 'en' ? pct(v)
+    : new Intl.NumberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(Number(v) || 0) + ' %');
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const dt = (iso) => {
+    if (!iso) return '—';
+    const [y, mo, da] = String(iso).slice(0, 10).split('-').map(Number);
+    if (!y) return '—';
+    return lang === 'sk' ? `${da}. ${mo}. ${y}` : lang === 'ru' ? `${String(da).padStart(2, '0')}.${String(mo).padStart(2, '0')}.${y}` : `${da} ${MON[mo - 1]} ${y}`;
+  };
   const e = (v) => esc(v == null || v === '' ? '—' : v);
   const posted = (arr) => (arr || []).filter((x) => x.status === 'posted');
-  const voided = (arr) => (arr || []).filter((x) => x.status === 'void');
   const byDate = (k) => (a, b) => String(a[k] || '').localeCompare(String(b[k] || '')) || a.id - b.id;
   const cps = posted(d.customerPayments).sort(byDate('date'));
   const sps = posted(d.supplierPayments).sort(byDate('date'));
   const dels = posted(d.supplierInvoices).map((x) => ({ ...x, _d: x.delivery_date || x.issue_date })).sort(byDate('_d'));
   const discs = posted(d.discounts).sort(byDate('date')).filter((x) => internal || Number(x.client_amount) > 0);
-  const invoiceNet = c.invoiceNet != null ? c.invoiceNet : Number(deal.invoice_total);
+  const invoice = Number(deal.invoice_total) || 0;
+  const invoiceNet = c.invoiceNet != null ? c.invoiceNet : invoice;
   const proforma = Number(deal.proforma_total) || 0;
-  const paidOut = sps.reduce((a, p) => a + Number(p.amount || 0), 0);
-  const feeExt = c.clientFeeTotal != null ? c.clientFeeTotal : c.feeTotal;          // the 4% inside the client's invoice
-  const feeExtPaid = c.clientFeePaid != null ? c.clientFeePaid : c.feePaid;
-  const docs = (d.documents || []).filter((x) => internal || x.category !== 'Supplier discount documents');
-  const now = new Date();
-  const stamp = `${fdate(now.toISOString())} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-  const deliveredNetClient = c.deliveredClientNet != null ? c.deliveredClientNet : c.deliveredClient;
   const supNet = c.proformaNet != null ? c.proformaNet : proforma;
-
-  // which client payment each supplier payment forwarded (same rule as the partner report)
+  const paidOut = sps.reduce((a, p) => a + Number(p.amount || 0), 0);
+  const feeExt = c.clientFeeTotal != null ? c.clientFeeTotal : c.feeTotal;
+  const feeExtPaid = c.clientFeePaid != null ? c.clientFeePaid : c.feePaid;
+  const now = new Date();
+  const stamp = `${dt(now.toISOString())} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const deliveredNetClient = c.deliveredClientNet != null ? c.deliveredClientNet : c.deliveredClient;
   const { fwd } = forwardingByPayment(cps, sps);
   const fundedLabel = (sp) => {
     const cp = cps.find((p) => p.id === sp.funded_by) || cps.filter((p) => String(p.date || '') <= String(sp.date || '')).slice(-1)[0];
-    return cp ? `${fdate(cp.date)} (${m(cp.amount_received)})` : '—';
+    return cp ? `${dt(cp.date)} (${m(cp.amount_received)})` : '—';
   };
 
-  const fact = (label, value, sub, cls) => `<div class="f ${cls || ''}"><div class="fl">${label}</div><div class="fv">${value}</div><div class="fs">${sub}</div></div>`;
-  // Column alignment per table: 'l' text (left), 'n' amounts (right). Set by tbl() for its rows.
+  // table helpers: per-table alignment, 'l' text / 'n' amounts
   let AL = '';
   const tr = (cells, cls) => `<tr class="${cls || ''}">${cells.map((x, i) => `<td class="${(AL[i] || 'n') === 'n' && i ? 'n' : ''}">${x}</td>`).join('')}</tr>`;
   const tbl = (head, rowsFn, footFn, align) => {
@@ -744,107 +886,97 @@ function buildDealReport(d, o) {
     const html = `<table class="${hasHead ? '' : 'kv'}">${hasHead ? `<thead><tr>${head.map((h, i) => `<th class="${(AL[i] || 'n') === 'n' && i ? 'n' : ''}">${h}</th>`).join('')}</tr></thead>` : ''}<tbody>${rows.join('')}</tbody>${foot ? `<tfoot>${foot}</tfoot>` : ''}</table>`;
     AL = prev; return html;
   };
+  const fact = (label, value, sub, cls) => `<div class="f ${cls || ''}"><div class="fl">${label}</div><div class="fv">${value}</div><div class="fs">${sub}</div></div>`;
   const check = (label, ok, text) => `<div class="chk ${ok ? 'ok' : 'warn'}"><b>${label}</b> ${text}</div>`;
 
-  // ---- 1. summary
+  // ---- summary
   const summary = `<div class="facts">
-    ${fact('Deal value', m(invoiceNet), c.clientDiscount > 0.005 ? `after ${m(c.clientDiscount)} discount` : 'invoice to client')}
-    ${fact('Received from client', m(c.totalReceived), `${cps.length} payment${cps.length === 1 ? '' : 's'}`, 'in')}
-    ${fact('Still due from client', m(c.customerBalance), c.customerOverpayment > 0.005 ? `client credit ${m(c.customerOverpayment)}` : c.customerBalance > 0.005 ? 'outstanding' : 'fully paid', c.customerBalance > 0.005 ? 'due' : 'ok')}
-    ${fact('Paid to supplier', m(paidOut), internal ? (c.supplierOverpaid > 0.005 ? `supplier owes us ${m(c.supplierOverpaid)}` : `${m(c.supplierOpenToPay)} still to pay`) : `${sps.length} payment${sps.length === 1 ? '' : 's'}`, 'out')}
-    ${fact('Goods delivered', m(c.deliveredValue), `${pct(c.deliveryPct)} of proforma · ${m(c.deliveryOutstanding)} to go`, 'goods')}
-    ${internal ? fact('Europa income', m(c.feeTotal), `${m(c.incomeKept)} earned · ${m(c.incomeRemaining)} to come`, 'gold')
-      : fact('Agreed 4% fee', m(feeExt), `${m(feeExtPaid)} covered by payments`, 'gold')}
+    ${fact(T.invoiceToClient, m(invoice), c.clientDiscount > 0.005 ? T.afterDisc(m(invoiceNet)) : T.noDisc)}
+    ${fact(T.received, m(c.totalReceived), T.payments(cps.length), 'in')}
+    ${fact(T.stillDue, m(c.customerBalance), c.customerOverpayment > 0.005 ? T.clientCredit(m(c.customerOverpayment)) : c.customerBalance > 0.005 ? T.outstanding : T.fullyPaid, c.customerBalance > 0.005 ? 'due' : 'ok')}
+    ${fact(T.paidToSupplier, m(paidOut), internal ? (c.supplierOverpaid > 0.005 ? T.supOwesUs(m(c.supplierOverpaid)) : T.stillToPay(m(c.supplierOpenToPay))) : T.payments(sps.length), 'out')}
+    ${fact(T.delivered, m(c.deliveredValue), T.ofProforma(pc(c.deliveryPct), m(c.deliveryOutstanding)), 'goods')}
+    ${internal ? fact(T.europaIncome, m(c.feeTotal), T.earned(m(c.incomeKept), m(c.incomeRemaining)), 'gold')
+      : fact(T.agreedFee, m(feeExt), T.coveredBy(m(feeExtPaid)), 'gold')}
   </div>`;
 
-  // ---- 2. parties & references
-  const closure = deal.closure_state === 'awaiting_letter' ? `Completed — awaiting manufacturer balance letter (${m(deal.closure_balance)})`
-    : deal.closure_state === 'closed' ? (Number(deal.closure_balance) > 0.005 ? `Closed — manufacturer balance ${m(deal.closure_balance)} confirmed by letter` : 'Completed and closed')
-      : deal.status === 'active' ? 'Active' : deal.status;
+  // ---- parties
+  const closure = deal.closure_state === 'awaiting_letter' ? T.stAwait(m(deal.closure_balance))
+    : deal.closure_state === 'closed' ? (Number(deal.closure_balance) > 0.005 ? T.stClosedLetter(m(deal.closure_balance)) : T.stClosed)
+      : deal.status === 'active' ? T.stActive : deal.status;
   const parties = tbl(['', ''], () => [
-    tr(['Client', e(deal.customer_name)]), tr(['Supplier', e(deal.supplier_name)]),
-    tr(['Deal reference', e(deal.ref)]), tr(['Supplier proforma number', e(deal.proforma_number)]),
-    tr(['Our invoice number', e(deal.invoice_number)]), tr(['Opened', e(fdate(deal.created_at))]),
-    tr(['Status', e(closure)]), ...(deal.completed_at ? [tr(['Completed', e(fdate(deal.completed_at))])] : []),
+    tr([T.client, e(deal.customer_name)]), tr([T.supplier, e(deal.supplier_name)]),
+    tr([T.dealRef, e(deal.ref)]), tr([T.proformaNo, e(deal.proforma_number)]),
+    tr([T.invoiceNo, e(deal.invoice_number)]), tr([T.opened, dt(deal.created_at)]),
+    tr([T.status, e(closure)]), ...(deal.completed_at ? [tr([T.completed, dt(deal.completed_at)])] : []),
   ], null, 'ln');
 
-  // ---- 3. how the value is made up
+  // ---- value: originals stay as issued; discounts are applied afterwards
   const valueRows = () => [
-    tr(['Supplier proforma', m(proforma)]),
-    ...(internal && c.supplierDiscount > 0.005 ? [tr(['Less: discounts from supplier', '−' + m(c.supplierDiscount)]), tr(['Proforma after discounts', `<b>${m(supNet)}</b>`])] : []),
-    tr(['Invoice to client', m(deal.invoice_total)]),
-    ...(c.clientDiscount > 0.005 ? [tr(['Less: discounts to client', '−' + m(c.clientDiscount)])] : []),
-    tr(['<b>Invoice after discounts</b>', `<b>${m(invoiceNet)}</b>`]),
-    internal ? tr(['Europa income (invoice − proforma)', `<b>${m(c.feeTotal)}</b> · ${(c.marginPct || 0).toFixed(2)}% on proforma`])
-      : tr(['Of which: agreed 4% fee', m(feeExt)]),
-    ...(internal && Math.abs(c.discountKept || 0) > 0.005 ? [tr([c.discountKept > 0 ? 'Of which kept from supplier discounts' : 'Of which given above supplier discounts', m(Math.abs(c.discountKept))])] : []),
+    tr([T.supProforma, m(proforma)]),
+    ...(internal && c.supplierDiscount > 0.005 ? [tr([T.lessSupDisc, '−' + m(c.supplierDiscount)]), tr([`<b>${T.proformaAfter}</b>`, `<b>${m(supNet)}</b>`])] : []),
+    tr([T.invoiceToClient, m(invoice)]),
+    ...(c.clientDiscount > 0.005 ? [tr([T.lessCliDisc, '−' + m(c.clientDiscount)]), tr([`<b>${T.invoiceAfter}</b>`, `<b>${m(invoiceNet)}</b>`])] : []),
+    internal ? tr([T.incomeRow, `<b>${m(c.feeTotal)}</b> · ${pc(c.marginPct || 0)} ${T.onProforma}`]) : tr([T.feeRow, m(feeExt)]),
+    ...(internal && Math.abs(c.discountKept || 0) > 0.005 ? [tr([c.discountKept > 0 ? T.keptRow : T.givenRow, m(Math.abs(c.discountKept))])] : []),
   ];
 
-  // ---- 4. payments in
+  // ---- payments in
   let run = 0;
-  const inRows = () => { run = 0; return cps.map((p, i) => { run += Number(p.amount_received) || 0;
-    return tr([`${i + 1}. ${fdate(p.date)}`, m(p.amount_received), e(p.bank_ref), m(run), m(Math.max(0, invoiceNet - run))]); }); };
-  const paymentsIn = cps.length ? tbl(['Date', 'Amount', 'Reference', 'Total received', 'Balance after'], inRows,
-    () => tr(['<b>Total</b>', `<b>${m(c.totalReceived)}</b>`, '', '', `<b>${m(c.customerBalance)}</b>`], 'tot'), 'lnlnn') : '<p class="none">No payments received yet.</p>';
+  const paymentsIn = cps.length ? tbl([T.date, T.amount, T.reference, T.totalReceived, T.balanceAfter],
+    () => { run = 0; return cps.map((p, i) => { run += Number(p.amount_received) || 0;
+      return tr([`<span class="ix">${i + 1}</span>${dt(p.date)}`, m(p.amount_received), e(p.bank_ref), m(run), m(Math.max(0, invoiceNet - run))]); }); },
+    () => tr([`<b>${T.total}</b>`, `<b>${m(c.totalReceived)}</b>`, '', '', `<b>${m(c.customerBalance)}</b>`], 'tot'), 'lnlnn') : `<p class="none">${T.noPayIn}</p>`;
 
-  // ---- 5. payments out
-  const outRows = () => { run = 0; return sps.map((p, i) => { run += Number(p.amount) || 0;
-    return tr([`${i + 1}. ${fdate(p.date)}`, m(p.amount), e(p.bank_ref), fundedLabel(p), m(run), ...(internal ? [m(Math.max(0, supNet - run))] : [])]); }); };
-  const paymentsOut = sps.length ? tbl(['Date', 'Amount', 'Reference', 'Forwarding client payment of', 'Total paid', ...(internal ? ['Still to pay after'] : [])], outRows,
-    () => tr(['<b>Total</b>', `<b>${m(paidOut)}</b>`, '', '', '', ...(internal ? [`<b>${m(c.supplierOpenToPay)}</b>`] : [])], 'tot'), 'lnllnn') : '<p class="none">No payments sent to the supplier yet.</p>';
-  const fwdNote = cps.length && sps.length ? `<p class="note">Forwarded per client payment: ${cps.map((p) => `${fdate(p.date)} ${m(p.amount_received)} → ${m(fwd.get(p.id) || 0)} sent to supplier`).join('; ')}.</p>` : '';
+  // ---- payments out
+  const paymentsOut = sps.length ? tbl([T.date, T.amount, T.reference, T.forwarding, T.totalPaid, ...(internal ? [T.stillToPayAfter] : [])],
+    () => { run = 0; return sps.map((p, i) => { run += Number(p.amount) || 0;
+      return tr([`<span class="ix">${i + 1}</span>${dt(p.date)}`, m(p.amount), e(p.bank_ref), fundedLabel(p), m(run), ...(internal ? [m(Math.max(0, supNet - run))] : [])]); }); },
+    () => tr([`<b>${T.total}</b>`, `<b>${m(paidOut)}</b>`, '', '', '', ...(internal ? [`<b>${m(c.supplierOpenToPay)}</b>`] : [])], 'tot'), 'lnllnn') : `<p class="none">${T.noPayOut}</p>`;
+  const fwdNote = cps.length && sps.length ? `<p class="note">${T.fwdNote}: ${cps.map((p) => `${dt(p.date)} ${m(p.amount_received)} → ${T.sentToSup(m(fwd.get(p.id) || 0))}`).join('; ')}.</p>` : '';
 
-  // ---- 6. deliveries
-  const delRows = () => { run = 0; return dels.map((x, i) => { run += Number(x.proforma_allocated) || 0;
-    return tr([`${i + 1}. ${fdate(x._d)}`, e(x.invoice_number), m(x.proforma_allocated || 0), e(x.quantity), m(run), m(Math.max(0, proforma - run))]); }); };
-  const deliveries = dels.length ? tbl(['Date', 'Delivery invoice', 'Proforma value', 'Quantity', 'Delivered so far', 'Still to deliver'], delRows,
-    () => tr(['<b>Total</b>', '', `<b>${m(c.deliveredValue)}</b>`, '', `<b>${pct(c.deliveryPct)}</b>`, `<b>${m(c.deliveryOutstanding)}</b>`], 'tot'), 'llnlnn') : '<p class="none">No deliveries yet.</p>';
+  // ---- deliveries
+  const deliveries = dels.length ? tbl([T.date, T.delInvoice, T.proformaValue, T.quantity, T.deliveredSoFar, T.stillToDeliver],
+    () => { run = 0; return dels.map((x, i) => { run += Number(x.proforma_allocated) || 0;
+      return tr([`<span class="ix">${i + 1}</span>${dt(x._d)}`, e(x.invoice_number), m(x.proforma_allocated || 0), e(x.quantity), m(run), m(Math.max(0, proforma - run))]); }); },
+    () => tr([`<b>${T.total}</b>`, '', `<b>${m(c.deliveredValue)}</b>`, '', `<b>${pc(c.deliveryPct)}</b>`, `<b>${m(c.deliveryOutstanding)}</b>`], 'tot'), 'llnlnn') : `<p class="none">${T.noDel}</p>`;
 
-  // ---- 7. discounts
-  const discRows = () => discs.map((x) => tr([fdate(x.date), ...(internal ? [m(x.supplier_amount || 0), e(x.supplier_ref)] : []), m(x.client_amount || 0), e(x.client_ref)]));
-  const discounts = discs.length ? `<h2>Discounts</h2>` + tbl(['Date', ...(internal ? ['From supplier', 'Supplier document'] : []), internal ? 'To client' : 'Discount', internal ? 'Our document' : 'Credit note'], discRows, null, internal ? 'lnlnl' : 'lnl') : '';
+  // ---- discounts
+  const discounts = discs.length ? `<h2>${T.discounts}</h2>` + tbl(
+    [T.date, ...(internal ? [T.fromSupplier, T.supDoc] : []), internal ? T.toClient : T.discount, internal ? T.ourDoc : T.creditNote],
+    () => discs.map((x) => tr([dt(x.date), ...(internal ? [m(x.supplier_amount || 0), e(x.supplier_ref)] : []), m(x.client_amount || 0), e(x.client_ref)])),
+    null, internal ? 'lnlnl' : 'lnl') : '';
 
-  // ---- 8. balances & checks
+  // ---- balances and checks
   const cliGap = Math.round(((deliveredNetClient || 0) - c.totalReceived) * 100) / 100;
   const supGap = Math.round(((c.deliveredSupplierNet != null ? c.deliveredSupplierNet : c.deliveredValue) - paidOut) * 100) / 100;
   const checks = [
-    check('Client balance:', c.customerBalance < 0.005 && c.customerOverpayment < 0.005,
-      c.customerOverpayment > 0.005 ? `the client has overpaid by ${m(c.customerOverpayment)} (credit in their favour).` : c.customerBalance > 0.005 ? `${m(c.customerBalance)} is still due from the client.` : 'the client has paid in full.'),
-    check('Client payments vs goods received:', Math.abs(cliGap) < 0.005,
-      cliGap > 0.005 ? `goods worth ${m(deliveredNetClient)} have been received; ${m(cliGap)} of that is not yet paid.` : cliGap < -0.005 ? `the client has paid ${m(-cliGap)} ahead of deliveries.` : 'payments match the goods received.'),
+    check(T.ckClient, c.customerBalance < 0.005 && c.customerOverpayment < 0.005,
+      c.customerOverpayment > 0.005 ? T.ckClientOver(m(c.customerOverpayment)) : c.customerBalance > 0.005 ? T.ckClientDue(m(c.customerBalance)) : T.ckClientPaid),
+    check(T.ckCliGoods, Math.abs(cliGap) < 0.005,
+      cliGap > 0.005 ? T.ckCliGoodsDue(m(deliveredNetClient), m(cliGap)) : cliGap < -0.005 ? T.ckCliGoodsAhead(m(-cliGap)) : T.ckCliGoodsOk),
     ...(internal ? [
-      check('Supplier balance:', (c.supplierOpenToPay || 0) < 0.005 && (c.supplierOverpaid || 0) < 0.005,
-        c.supplierOverpaid > 0.005 ? `we have paid ${m(c.supplierOverpaid)} more than the proforma after discounts — the supplier owes us this amount.` : c.supplierOpenToPay > 0.005 ? `${m(c.supplierOpenToPay)} is still to be paid to the supplier.` : 'the supplier has been paid in full.'),
-      check('Supplier payments vs goods delivered:', Math.abs(supGap) < 0.005,
-        supGap > 0.005 ? `goods worth ${m(supGap)} have been delivered but not yet paid for.` : supGap < -0.005 ? `${m(-supGap)} has been paid ahead of deliveries.` : 'payments match the goods delivered.'),
-      check('Cash position:', (c.companyMoneyFronted || 0) < 0.005,
-        `${m(c.heldInHouse)} is held now (received − paid out); ${m(c.incomeKept)} of it is Europa income earned so far.` + (c.companyMoneyFronted > 0.005 ? ` Company money fronted: ${m(c.companyMoneyFronted)}.` : '')),
+      check(T.ckSup, (c.supplierOpenToPay || 0) < 0.005 && (c.supplierOverpaid || 0) < 0.005,
+        c.supplierOverpaid > 0.005 ? T.ckSupOver(m(c.supplierOverpaid)) : c.supplierOpenToPay > 0.005 ? T.ckSupOpen(m(c.supplierOpenToPay)) : T.ckSupPaid),
+      check(T.ckSupGoods, Math.abs(supGap) < 0.005,
+        supGap > 0.005 ? T.ckSupGoodsDue(m(supGap)) : supGap < -0.005 ? T.ckSupGoodsAhead(m(-supGap)) : T.ckSupGoodsOk),
+      check(T.ckCash, (c.companyMoneyFronted || 0) < 0.005,
+        T.ckCashText(m(c.heldInHouse), m(c.incomeKept)) + (c.companyMoneyFronted > 0.005 ? T.ckFronted(m(c.companyMoneyFronted)) : '')),
     ] : []),
-    check('Deliveries:', (c.deliveryOutstanding || 0) < 0.005,
-      c.deliveryOutstanding > 0.005 ? `${pct(c.deliveryPct)} delivered; goods worth ${m(c.deliveryOutstanding)} (proforma value) are still to be delivered.` : 'all goods on the proforma have been delivered.'),
+    check(T.ckDel, (c.deliveryOutstanding || 0) < 0.005,
+      c.deliveryOutstanding > 0.005 ? T.ckDelOpen(pc(c.deliveryPct), m(c.deliveryOutstanding)) : T.ckDelDone),
   ].join('');
 
-  // ---- 9. timeline
+  // ---- timeline
   const events = [
-    ...cps.map((p) => ({ d: p.date, k: 'Payment received', t: `from ${deal.customer_name}`, a: m(p.amount_received) })),
-    ...sps.map((p) => ({ d: p.date, k: 'Payment sent', t: `to ${deal.supplier_name}`, a: m(p.amount) })),
-    ...dels.map((x) => ({ d: x._d, k: 'Delivery', t: `${x.invoice_number}${x.quantity ? ' · ' + x.quantity : ''}`, a: m(x.proforma_allocated || 0) })),
-    ...discs.map((x) => ({ d: x.date, k: 'Discount', t: internal ? `supplier ${m(x.supplier_amount || 0)} / client` : 'on the invoice', a: m(x.client_amount || 0) })),
+    ...cps.map((p) => ({ d: p.date, k: T.evIn, t: T.from(deal.customer_name), a: m(p.amount_received) })),
+    ...sps.map((p) => ({ d: p.date, k: T.evOut, t: T.to(deal.supplier_name), a: m(p.amount) })),
+    ...dels.map((x) => ({ d: x._d, k: T.evDel, t: `${x.invoice_number}${x.quantity ? ' · ' + x.quantity : ''}`, a: m(x.proforma_allocated || 0) })),
+    ...discs.map((x) => ({ d: x.date, k: T.evDisc, t: internal ? T.supClient(m(x.supplier_amount || 0)) : T.onInvoice, a: m(x.client_amount || 0) })),
   ].sort((a, b) => String(a.d || '').localeCompare(String(b.d || '')));
-  const timeline = events.length ? tbl(['Date', 'Event', 'Details', 'Amount'], () => events.map((x) => tr([fdate(x.d), x.k, esc(x.t), x.a])), null, 'llln') : '<p class="none">No activity yet.</p>';
+  const timeline = events.length ? tbl([T.date, T.event, T.details, T.amount], () => events.map((x) => tr([dt(x.d), x.k, esc(x.t), x.a])), null, 'llln') : `<p class="none">${T.noActivity}</p>`;
 
-  // ---- 10. documents, voided entries
-  const documents = docs.length ? tbl(['Category', 'File', 'Added', 'Status'], () => docs.map((x) => tr([esc(x.category), esc(x.original_name), fdate(x.created_at), esc(x.status)])), null, 'llll') : '<p class="none">No documents on file.</p>';
-  const voids = !internal ? [] : () => [
-    ...voided(d.customerPayments).map((p) => tr([fdate(p.date), 'Payment received', m(p.amount_received), e(p.void_reason)])),
-    ...voided(d.supplierPayments).map((p) => tr([fdate(p.date), 'Payment sent', m(p.amount), e(p.void_reason)])),
-    ...voided(d.supplierInvoices).map((x) => tr([fdate(x.delivery_date || x.issue_date), `Delivery ${esc(x.invoice_number)}`, m(x.proforma_allocated || 0), e(x.void_reason)])),
-    ...voided(d.discounts).map((x) => tr([fdate(x.date), 'Discount', m(x.client_amount || 0), e(x.void_reason)])),
-  ];
-  const voidList = typeof voids === 'function' ? voids : () => [];
-  const voidCount = internal ? (voided(d.customerPayments).length + voided(d.supplierPayments).length + voided(d.supplierInvoices).length + voided(d.discounts).length) : 0;
-
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Deal report ${esc(deal.ref)}</title>
+  return `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><title>${T.title} ${esc(deal.ref)}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   @page { size: A4; margin: 14mm 14mm 16mm; }
@@ -864,12 +996,13 @@ function buildDealReport(d, o) {
   .fl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: #6c6656; font-weight: 700; }
   .fv { font-size: 18px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
   .fs { font-size: 11.5px; color: #6c6656; }
-  table { width: 100%; border-collapse: collapse; font-size: 12.5px; break-inside: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: #6c6656; background: #f4f6fa; padding: 6px 8px; border-bottom: 1px solid #dfe6f0; }
   td { padding: 6px 8px; border-bottom: 1px solid #eef1f5; vertical-align: top; }
   .n { text-align: right; font-variant-numeric: tabular-nums; }
   table.kv td:first-child { color: #6c6656; width: 52%; }
-  th:first-child, td:first-child { text-align: left; }
+  table:not(.kv) td:first-child { white-space: nowrap; }
+  .ix { display: inline-block; min-width: 18px; color: #a39b88; font-size: 11px; }
   tr { break-inside: avoid; }
   tr.tot td { border-top: 2px solid #16233a; border-bottom: 0; }
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
@@ -883,20 +1016,17 @@ function buildDealReport(d, o) {
   @media print { body { padding: 0; } }
 </style></head><body>
   <div class="hd">${o.icon ? `<img src="${o.icon}" alt="">` : ''}
-    <div><h1>Deal report — ${esc(deal.ref)}</h1><div class="sub">${esc(deal.title)} · ${esc(deal.customer_name)} · ${esc(deal.supplier_name)}</div></div>
-    <div class="right"><b>${esc(closure)}</b>As at ${stamp}<br>${internal ? 'Internal version' : 'Shareable version'}</div></div>
+    <div><h1>${T.title} — ${esc(deal.ref)}</h1><div class="sub">${esc(deal.title)} · ${esc(deal.customer_name)} · ${esc(deal.supplier_name)}</div></div>
+    <div class="right"><b>${esc(closure)}</b>${T.asAt} ${stamp}<br>${internal ? T.internal : T.shareable}</div></div>
   ${summary}
-  <div class="two"><div><h2>Parties and references</h2>${parties}</div><div><h2>Deal value</h2>${tbl(['', ''], valueRows, null, 'ln')}</div></div>
-  <h2>Payments received from the client</h2>${paymentsIn}
-  <h2>Payments sent to the supplier</h2>${paymentsOut}${fwdNote}
-  <h2>Deliveries (proforma value)</h2>${deliveries}
+  <div class="two"><div><h2>${T.parties}</h2>${parties}</div><div><h2>${T.dealValue}</h2>${tbl(['', ''], valueRows, null, 'ln')}</div></div>
+  <h2>${T.payIn}</h2>${paymentsIn}
+  <h2>${T.payOut}</h2>${paymentsOut}${fwdNote}
+  <h2>${T.deliveries}</h2>${deliveries}
   ${discounts}
-  <h2>Balances and checks</h2>${checks}
-  <h2>Timeline</h2>${timeline}
-  <h2>Documents on file</h2>${documents}
-  ${voidCount ? `<h2>Voided entries (not counted)</h2>${tbl(['Date', 'Entry', 'Amount', 'Reason'], voidList, null, 'llnl')}` : ''}
-  <div class="ft">Prepared from the records in Europa Deal Control on ${stamp}${o.by ? ` by ${esc(o.by)}` : ''}. All amounts in ${esc(cur)}. Entries awaiting approval are not included.
-    Balances are shown against the invoice after discounts.<br>Europa Pharmaceutical s. r. o. — part of the Boran&amp;Co Group.</div>
+  <h2>${T.checks}</h2>${checks}
+  <h2>${T.timeline}</h2>${timeline}
+  <div class="ft">${esc(T.footer(stamp, o.by, cur))}<br>${esc(T.group)}</div>
 </body></html>`;
 }
 
@@ -906,20 +1036,33 @@ async function dealReportModal(id) {
   const icon64 = await iconDataUrl();
   const by = State.user && State.user.name;
   const body = `
-    ${isAdmin() ? `<label class="rep-item" style="margin-bottom:8px"><input type="checkbox" id="fr_int" checked/>
-      <span><b>Include Europa's internal figures</b> — income, margin, supplier discounts, cash held. Untick for a version to share with the client.</span></label>` : ''}
+    <div class="fr-opts">
+      <div class="seg" role="radiogroup" aria-label="Report language">
+        <button type="button" data-frlang="en" class="on" aria-pressed="true">English</button>
+        <button type="button" data-frlang="sk" aria-pressed="false">Slovensky</button>
+        <button type="button" data-frlang="ru" aria-pressed="false">Русский</button>
+      </div>
+      ${isAdmin() ? `<label class="rep-item"><input type="checkbox" id="fr_int" checked/>
+        <span><b>Include Europa's internal figures</b> — income, margin, supplier discounts, cash held. Untick for a version to share with the client.</span></label>` : ''}
+    </div>
     <iframe id="fr_frame" class="report-frame" title="Deal report preview"></iframe>`;
   const close = openModal('Deal report — ' + d.deal.ref, body,
     `<button class="btn" id="fr_close">Close</button><button class="btn" id="fr_dl">Download</button><button class="btn primary" id="fr_print">Print / Save as PDF</button>`, { xwide: true });
   const frame = document.getElementById('fr_frame');
   let html = '';
+  let lang = 'en';
   const build = () => {
     const internal = isAdmin() && document.getElementById('fr_int').checked;
-    html = buildDealReport(d, { internal, icon: icon64, by });
+    html = buildDealReport(d, { internal, icon: icon64, by, lang });
     frame.srcdoc = html;
   };
   const tog = document.getElementById('fr_int');
   if (tog) tog.onchange = build;
+  document.querySelectorAll('[data-frlang]').forEach((b) => (b.onclick = () => {
+    lang = b.dataset.frlang;
+    document.querySelectorAll('[data-frlang]').forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', String(x === b)); });
+    build();
+  }));
   document.getElementById('fr_close').onclick = close;
   document.getElementById('fr_print').onclick = () => {
     try { frame.contentWindow.focus(); frame.contentWindow.print(); }
@@ -929,11 +1072,95 @@ async function dealReportModal(id) {
     const internal = isAdmin() && document.getElementById('fr_int') && document.getElementById('fr_int').checked;
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
-    a.download = `${d.deal.ref}-deal-report-${today()}${internal ? '-internal' : ''}.html`;
+    a.download = `${d.deal.ref}-deal-report-${lang}-${today()}${internal ? '-internal' : ''}.html`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   };
   build();
+}
+
+/* ================= ACCOUNTS (statements) =================
+   A ledger for each side of the deal, as an accountant keeps it: what was
+   charged, what was paid or credited, and the running balance. */
+function statementRows(opening, entries) {
+  const rows = [opening, ...entries.slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))];
+  let bal = 0;
+  return rows.map((r) => { bal = Math.round((bal + (r.charge || 0) - (r.credit || 0)) * 100) / 100; return { ...r, bal }; });
+}
+function statement(cur, party, sub, rows, kind) {
+  const m = (v) => money(v, cur);
+  const charged = rows.reduce((a, r) => a + (r.charge || 0), 0);
+  const credited = rows.reduce((a, r) => a + (r.credit || 0), 0);
+  const bal = rows.length ? rows[rows.length - 1].bal : 0;
+  const settledPct = charged > 0 ? Math.min(100, (credited / charged) * 100) : 0;
+  const status = bal > 0.005
+    ? { cls: 'due', label: kind === 'client' ? (isAdmin() ? 'Owes us' : 'You owe') : 'We owe' }
+    : bal < -0.005
+      ? { cls: 'credit', label: kind === 'client' ? (isAdmin() ? 'Credit in their favour' : 'Credit in your favour') : 'Supplier owes us' }
+      : { cls: 'ok', label: 'Settled' };
+  return `<div class="stmt">
+    <div class="stmt-top">
+      <div><div class="stmt-party">${esc(party)}</div><div class="meta">${sub}</div></div>
+      <div class="stmt-bal ${status.cls}"><span>${status.label}</span><b>${status.cls === 'ok' ? m(0) : m(Math.abs(bal))}</b></div>
+    </div>
+    <div class="stmt-bar" title="${Math.round(settledPct)}% paid or credited"><span style="width:${settledPct}%"></span></div>
+    <div class="stmt-sum"><span>Charged <b>${m(charged)}</b></span><span>Paid &amp; credited <b>${m(credited)}</b></span><span>${Math.round(settledPct)}% settled</span></div>
+    <table class="grid stmt-t">
+      <thead><tr><th>Date</th><th>Description</th><th class="num">Charged</th><th class="num">Paid / credited</th><th class="num">Balance</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr class="${r.kind || ''}">
+        <td data-label="Date">${fdate(r.date)}</td>
+        <td data-label="Description">${r.desc}</td>
+        <td class="num" data-label="Charged">${r.charge ? m(r.charge) : ''}</td>
+        <td class="num" data-label="Paid / credited">${r.credit ? m(r.credit) : ''}</td>
+        <td class="num bal" data-label="Balance">${m(r.bal)}</td></tr>`).join('')}</tbody>
+    </table>
+  </div>`;
+}
+function accountsCard(d) {
+  const deal = d.deal, cur = deal.currency, admin = isAdmin();
+  const posted = (arr) => (arr || []).filter((x) => x.status === 'posted');
+  // The invoice / proforma opens the statement: dated when the deal was entered,
+  // or earlier if payments were recorded with older dates.
+  const firstDate = [deal.created_at, ...posted(d.customerPayments).map((p) => p.date), ...posted(d.supplierPayments).map((p) => p.date),
+    ...posted(d.discounts).map((x) => x.date)].filter(Boolean).map((x) => String(x).slice(0, 10)).sort()[0];
+  const opened = firstDate || deal.created_at;
+  const ref = (x) => (x ? ` <span class="meta">${esc(x)}</span>` : '');
+  const client = statementRows(
+    { date: opened, desc: `Invoice${ref(deal.invoice_number)}`, charge: Number(deal.invoice_total) || 0, kind: 'open' },
+    [
+      ...posted(d.discounts).filter((x) => Number(x.client_amount) > 0).map((x) => ({ date: x.date, desc: `Discount${ref(x.client_ref)}`, credit: Number(x.client_amount), kind: 'disc' })),
+      ...posted(d.customerPayments).map((p) => ({ date: p.date, desc: `Payment received${ref(p.bank_ref)}`, credit: Number(p.amount_received) || 0, kind: 'pay' })),
+    ]);
+  const supplier = admin ? statementRows(
+    { date: opened, desc: `Proforma${ref(deal.proforma_number)}`, charge: Number(deal.proforma_total) || 0, kind: 'open' },
+    [
+      ...posted(d.discounts).filter((x) => Number(x.supplier_amount) > 0).map((x) => ({ date: x.date, desc: `Supplier discount${ref(x.supplier_ref)}`, credit: Number(x.supplier_amount), kind: 'disc' })),
+      ...posted(d.supplierPayments).map((p) => ({ date: p.date, desc: `Payment sent${ref(p.bank_ref)}`, credit: Number(p.amount) || 0, kind: 'pay' })),
+    ]) : null;
+  const chip = (rows, kind) => {
+    const b = rows[rows.length - 1].bal;
+    return `<span class="acc-chip ${b > 0.005 ? 'due' : b < -0.005 ? 'credit' : 'ok'}">${b > 0.005 ? money(b, cur) : b < -0.005 ? '−' + money(-b, cur) : 'settled'}</span>`;
+  };
+  if (!admin) {
+    return card('Your account', statement(cur, deal.customer_name, 'Statement of this deal with Europa Pharmaceutical', client, 'client'));
+  }
+  const tabs = `<div class="seg" role="tablist" aria-label="Choose account">
+      <button type="button" role="tab" data-acctab="client" class="on" aria-selected="true">Client ${chip(client, 'client')}</button>
+      <button type="button" role="tab" data-acctab="supplier" aria-selected="false">Supplier ${chip(supplier, 'supplier')}</button>
+    </div>`;
+  return `<div class="card acc-card">
+    <div class="card-h"><h3>Accounts</h3><div style="flex:1"></div>${tabs}</div>
+    <div class="card-b">
+      <div data-accpane="client">${statement(cur, deal.customer_name, 'What the client owes us on this deal', client, 'client')}</div>
+      <div data-accpane="supplier" class="hidden">${statement(cur, deal.supplier_name, 'What we owe the supplier on this deal', supplier, 'supplier')}</div>
+    </div>
+  </div>`;
+}
+function wireAccounts() {
+  document.querySelectorAll('[data-acctab]').forEach((b) => (b.onclick = () => {
+    document.querySelectorAll('[data-acctab]').forEach((x) => { const on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-selected', String(on)); });
+    document.querySelectorAll('[data-accpane]').forEach((p) => p.classList.toggle('hidden', p.dataset.accpane !== b.dataset.acctab));
+  }));
 }
 
 /* small line icons (crisp at any size, unlike +/− characters) */
@@ -945,6 +1172,8 @@ function icon(name) {
     tag: '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
     doc: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/>',
     edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/>',
+    expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+    collapse: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
   };
   return `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${P[name] || ''}</svg>`;
 }
@@ -967,9 +1196,23 @@ function keyFacts(d) {
       ${pctv != null ? `<div class="kf-bar"><span style="width:${pctv}%"></span></div>` : ''}
       <div class="kf-s">${sub}</div>
     </div>`;
-  const disc = c.clientDiscount > 0.005 ? ` · after ${money(c.clientDiscount, cur)} discount` : '';
+  // The proforma and our invoice stay at their original amounts; a discount is
+  // applied afterwards, and what remains is shown next to it.
+  const amountLine = (label, orig, disc, tip) => `
+    <div class="kfd-row" title="${esc(tip)}">
+      <span class="kfd-l">${label}</span>
+      <span class="kfd-o">${money(orig, cur)}</span>
+      ${disc > 0.005 ? `<span class="kfd-d">− ${money(disc, cur)}</span><span class="kfd-a">${money(orig - disc, cur)}</span>`
+        : `<span class="kfd-d none">no discount</span><span class="kfd-a">${money(orig, cur)}</span>`}
+    </div>`;
+  const sDisc = isAdmin() ? (c.supplierDiscount || 0) : 0;
+  const dealTile = `<div class="kf deal">
+    <div class="kfd-head"><span>Deal</span><span>original</span><span>discount</span><span>after discount</span></div>
+    ${amountLine('Supplier proforma', Number(deal.proforma_total) || 0, sDisc, 'What the supplier invoiced on the proforma, the discount they gave, and what remains to be paid to them.')}
+    ${amountLine('Invoice to client', Number(deal.invoice_total) || 0, c.clientDiscount || 0, 'What we invoiced the client, the discount we gave, and what the client pays in total.')}
+  </div>`;
   return `<div class="kf-grid">
-    ${tile('value', 'Deal value', money(net, cur), (isAdmin() ? `Proforma ${money(c.proformaNet != null ? c.proformaNet : deal.proforma_total, cur)}` : `Order value`) + disc, null)}
+    ${dealTile}
     ${tile('in', 'Received', money(c.totalReceived, cur), lastIn ? `${Math.round(recvPct)}% · last payment ${lastIn}` : 'no payments yet', recvPct)}
     ${tile(c.customerBalance > 0.005 ? 'due' : 'ok', 'Still due from client', money(c.customerBalance, cur),
       c.customerOverpayment > 0.005 ? `overpaid — credit of ${money(c.customerOverpayment, cur)}` : c.customerBalance > 0.005 ? `${Math.round(100 - recvPct)}% of the deal outstanding` : 'fully paid', null)}
@@ -990,7 +1233,8 @@ function flowsCard(d) {
       <div class="seg" role="tablist" aria-label="Choose flow">
         <button type="button" role="tab" data-flowtab="money" class="on" aria-selected="true">Money</button>
         <button type="button" role="tab" data-flowtab="goods" aria-selected="false">Goods</button>
-      </div></div>
+      </div>
+      <button type="button" class="btn sm icon-only" id="flows-max" aria-pressed="false" aria-label="Maximize flows" title="Maximize to full screen">${icon('expand')}</button></div>
     <div class="card-b">
       <div data-flowpane="money">${dealDiagram(d)}</div>
       <div data-flowpane="goods" class="hidden">${goodsDiagram(d)}</div>
@@ -998,7 +1242,30 @@ function flowsCard(d) {
     </div>
   </div>`;
 }
+/* Maximize the Flows card to the whole screen and back. */
+function setFlowsMax(on) {
+  const el = document.querySelector('.flows-card');
+  const btn = document.getElementById('flows-max');
+  const content = document.getElementById('content');
+  if (!el || !btn) return;
+  el.classList.toggle('max', on);
+  document.body.classList.toggle('flows-max-open', on);
+  // the page zoom must not shrink the full-screen view
+  if (on) { State._zoomBeforeMax = content ? content.style.zoom : ''; if (content) content.style.zoom = ''; }
+  else if (content) content.style.zoom = State._zoomBeforeMax || '';
+  btn.innerHTML = icon(on ? 'collapse' : 'expand');
+  btn.setAttribute('aria-pressed', String(on));
+  btn.setAttribute('aria-label', on ? 'Minimize flows' : 'Maximize flows');
+  btn.title = on ? 'Back to normal size (Esc)' : 'Maximize to full screen';
+  dgTipEl().classList.remove('on');
+}
 function wireFlowsCard() {
+  const mx = document.getElementById('flows-max');
+  if (mx) mx.onclick = () => setFlowsMax(!document.querySelector('.flows-card').classList.contains('max'));
+  if (!State._flowsEsc) {
+    State._flowsEsc = true;
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('flows-max-open')) setFlowsMax(false); });
+  }
   document.querySelectorAll('[data-flowtab]').forEach((b) => (b.onclick = () => {
     document.querySelectorAll('[data-flowtab]').forEach((x) => { const on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-selected', String(on)); });
     document.querySelectorAll('[data-flowpane]').forEach((p) => p.classList.toggle('hidden', p.dataset.flowpane !== b.dataset.flowtab));
@@ -1224,7 +1491,7 @@ function dealDiagram(d) {
     client: {
       role: 'Client · pays us', name: deal.customer_name, icon: '🏢', accent: 'green',
       tip: `${deal.customer_name}\nInvoiced ${m(invoice)}${cDisc > 0.005 ? ` (after a discount of ${m(cDisc)})` : ' (supplier proforma + our 4%)'}.\nPaid so far ${m(c.totalReceived)} in ${F.inCount}.\nStill to pay ${m(c.customerBalance)}.`,
-      lines: [['Invoiced', m(invoice), ''], ['Paid', m(c.totalReceived), 'green'],
+      lines: [[cDisc > 0.005 ? 'After discount' : 'Invoiced', m(invoice), ''], ['Paid', m(c.totalReceived), 'green'],
         ['Still to pay', m(c.customerBalance), c.customerBalance > 0.005 ? 'amber' : 'green']],
     },
     europa: admin ? {
@@ -1242,7 +1509,7 @@ function dealDiagram(d) {
       role: 'Supplier · paid by us', name: deal.supplier_name, icon: '🏭', accent: 'navy',
       tip: `${deal.supplier_name}\nProforma ${m(proforma)}${sDisc > 0.005 ? ` after a ${m(sDisc)} discount` : ''} sets the deal.\nPaid so far ${m(paidOut)} in ${F.outCount}.\nDelivered ${m(c.deliveredValue)} of the proforma in ${F.delCount}.`,
       lines: admin
-        ? [['Proforma', m(proforma), ''], ['Paid', m(paidOut), 'navy'],
+        ? [[sDisc > 0.005 ? 'After discount' : 'Proforma', m(proforma), ''], ['Paid', m(paidOut), 'navy'],
           ['Open to pay', m(c.supplierOpenToPay), c.supplierOpenToPay > 0.005 ? 'amber' : 'green']]
         : [['Proforma', m(proforma), ''], ['Paid', m(paidOut), 'navy'], ['Delivered', m(c.deliveredValue), 'green']],
     },
@@ -1251,11 +1518,11 @@ function dealDiagram(d) {
   // How the deal is built — the proforma is the starting point.
   const build = admin
     ? `<div class="dg-build">
-        <span class="bchip" data-dtip="${esc('The supplier proforma sets the scope of the deal: ' + m(proforma) + (sDisc > 0.005 ? ` (${m(proformaGross)} less a ${m(sDisc)} supplier discount).` : '.'))}">Supplier proforma <b>${m(proforma)}</b>${sDisc > 0.005 ? `<small>${m(proformaGross)} − ${m(sDisc)} discount</small>` : ''}</span>
+        <span class="bchip" data-dtip="${esc('The supplier proforma: ' + m(proformaGross) + (sDisc > 0.005 ? `. The supplier gave a ${m(sDisc)} discount on it, so ${m(proforma)} remains to be paid.` : '.'))}">Supplier proforma <b>${m(proformaGross)}</b>${sDisc > 0.005 ? `<small>− ${m(sDisc)} discount → ${m(proforma)}</small>` : ''}</span>
         <span class="bop">+</span>
-        <span class="bchip gold" data-dtip="${esc('Our markup on top of the proforma (' + (c.marginPct || 0) + '%). This is our income on the deal.')}">Our income <b>${m(fee)}</b></span>
+        <span class="bchip gold" data-dtip="${esc('Our income on the deal: what the client pays minus what we pay the supplier' + (sDisc > 0.005 || cDisc > 0.005 ? ', after discounts' : '') + ` (${(c.marginPct || 0).toFixed(2)}% on the proforma).`)}">Our income <b>${m(fee)}</b>${sDisc > 0.005 || cDisc > 0.005 ? '<small>after discounts</small>' : ''}</span>
         <span class="bop">=</span>
-        <span class="bchip navy" data-dtip="${esc('What we invoice the client: the proforma plus our income' + (cDisc > 0.005 ? `, after a ${m(cDisc)} discount to the client.` : '.'))}">Invoice to client <b>${m(invoice)}</b>${cDisc > 0.005 ? `<small>${m(Number(deal.invoice_total))} − ${m(cDisc)} discount</small>` : ''}</span>
+        <span class="bchip navy" data-dtip="${esc('What we invoiced the client: ' + m(Number(deal.invoice_total)) + (cDisc > 0.005 ? `. We gave a ${m(cDisc)} discount on it, so the client pays ${m(invoice)}.` : '.'))}">Invoice to client <b>${m(Number(deal.invoice_total))}</b>${cDisc > 0.005 ? `<small>− ${m(cDisc)} discount → ${m(invoice)}</small>` : ''}</span>
       </div>`
     : cDisc > 0.005 ? `<div class="dg-build">
         <span class="bchip" data-dtip="${esc('Europa invoice before discount.')}">Invoice <b>${m(Number(deal.invoice_total))}</b></span>
