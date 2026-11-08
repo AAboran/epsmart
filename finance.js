@@ -96,7 +96,7 @@ function splitApplied(applied, rate) {
  *                      customer_sales_value, status }]
  * supplierPayments: [{ amount, is_prepayment, invoice_id, status }]
  */
-function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments) {
+function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments, discounts) {
   const rate = Number(deal.commission_rate) || 0.04;
   const invoiceTotal = round2(Number(deal.invoice_total) || 0);
   const proformaTotal = round2(Number(deal.proforma_total) || 0);
@@ -107,12 +107,23 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
   const cp = posted(customerPayments);
   const si = posted(supplierInvoices);
   const sp = posted(supplierPayments);
+  const dc = posted(discounts);
+
+  // ---- Discounts ----
+  // A supplier discount lowers what we owe the supplier; the part we pass on
+  // lowers what the client owes us. Our income is the difference between the
+  // two net amounts, so keeping part of a discount raises it.
+  const supplierDiscount = round2(dc.reduce((a, x) => a + (Number(x.supplier_amount) || 0), 0));
+  const clientDiscount = round2(dc.reduce((a, x) => a + (Number(x.client_amount) || 0), 0));
+  const proformaNet = round2(Math.max(0, proformaTotal - supplierDiscount));
+  const invoiceNet = round2(Math.max(0, invoiceTotal - clientDiscount));
 
   // ---- Customer side ----
   const totalReceived = round2(cp.reduce((a, p) => a + (Number(p.amount_received) || 0), 0));
   const totalApplied = round2(cp.reduce((a, p) => a + (Number(p.amount_applied) || 0), 0));
-  const customerOverpayment = round2(Math.max(0, totalReceived - invoiceTotal));
-  const customerBalance = round2(Math.max(0, invoiceTotal - totalApplied));
+  const customerOverpayment = round2(Math.max(0, totalReceived - invoiceNet));
+  const customerBalance = round2(Math.max(0, invoiceNet - totalApplied));
+  const appliedNet = round2(Math.min(totalApplied, invoiceNet)); // payments that count towards the (discounted) invoice
 
   const prepayReceived = round2(
     cp.filter((p) => p.is_prepayment).reduce((a, p) => a + (Number(p.amount_applied) || 0), 0)
@@ -123,15 +134,17 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
   // ---- Our income = the markup we add (client invoice - supplier proforma) ----
   // Realized proportionally as the client pays. This reconciles exactly: once the
   // client has fully paid and the supplier is fully paid, cash held == our income.
-  const dealMargin = round2(Math.max(0, invoiceTotal - proformaTotal));
-  const keptRatio = invoiceTotal > 0 ? dealMargin / invoiceTotal : 0;
+  const originalMargin = round2(Math.max(0, invoiceTotal - proformaTotal));
+  const dealMargin = round2(Math.max(0, invoiceNet - proformaNet));
+  const keptRatio = invoiceNet > 0 ? dealMargin / invoiceNet : 0;
   const incomeExpectedTotal = dealMargin;
-  const incomeKept = round2(totalApplied * keptRatio);
+  const incomeKept = round2(appliedNet * keptRatio);
   const incomeRemaining = round2(Math.max(0, incomeExpectedTotal - incomeKept));
-  const marginPct = proformaTotal > 0 ? round2((dealMargin / proformaTotal) * 100) : 0;
+  const marginPct = proformaNet > 0 ? round2((dealMargin / proformaNet) * 100) : 0;
+  const discountKept = round2(supplierDiscount - clientDiscount); // effect of discounts on our income
 
   // ---- Supplier reserve (the 96% of what the client has paid) ----
-  const supplierReserveCollected = round2(totalApplied - incomeKept);
+  const supplierReserveCollected = round2(appliedNet - incomeKept);
 
   // =====================================================================
   // PAYMENT LAYER (money to the supplier) — independent of deliveries.
@@ -139,7 +152,7 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
   // simply the sum of every payment we've sent them. Deliveries never change
   // this.
   // =====================================================================
-  const supplierOwed = proformaTotal;
+  const supplierOwed = proformaNet;
   const totalPaidToSupplier = round2(sp.reduce((a, p) => a + (Number(p.amount) || 0), 0));
   const supplierOpenToPay = round2(Math.max(0, supplierOwed - totalPaidToSupplier));
   const supplierOverpaid = round2(Math.max(0, totalPaidToSupplier - supplierOwed));
@@ -181,7 +194,13 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
   // ---- Client settlement view (what the client owes us) ----
   // The client agreed to pay the supplier price plus our markup. Measured
   // against the goods actually delivered so far, this is what they are short.
-  const clientDueToDate = round2(Math.min(invoiceTotal, deliveredClient));
+  // Discounts change the price of the goods, not the goods: compare deliveries
+  // with payments at net (discounted) prices on both sides.
+  const cliFactor = invoiceTotal > 0 ? invoiceNet / invoiceTotal : 1;
+  const supFactor = proformaTotal > 0 ? proformaNet / proformaTotal : 1;
+  const deliveredClientNet = round2(deliveredClient * cliFactor);
+  const deliveredSupplierNet = round2(deliveredProforma * supFactor);
+  const clientDueToDate = round2(Math.min(invoiceNet, deliveredClientNet));
   const clientUnderpaidToDate = round2(Math.max(0, clientDueToDate - totalReceived));
   const clientPaidAhead = round2(Math.max(0, totalReceived - clientDueToDate));
 
@@ -193,18 +212,33 @@ function computeDeal(deal, customerPayments, supplierInvoices, supplierPayments)
   const feePaid = incomeKept;
   const feeRemaining = incomeRemaining;
   const feePct = feeTotal > 0 ? round2((feePaid / feeTotal) * 100) : 0;
+  // What the client sees as "the agreed 4% fee": the fee contained in her own
+  // (discounted) invoice at the agreed markup. It never reveals how much of a
+  // supplier discount was kept.
+  const clientFeeTotal = markupRatio > 0 ? round2(invoiceNet - invoiceNet / markupRatio) : 0;
+  const clientFeePaid = invoiceNet > 0 ? round2(appliedNet * (clientFeeTotal / invoiceNet)) : 0;
+  const clientFeeRemaining = round2(Math.max(0, clientFeeTotal - clientFeePaid));
+  const clientFeePct = clientFeeTotal > 0 ? round2((clientFeePaid / clientFeeTotal) * 100) : 0;
 
   // ---- Our position: cash in hand vs. our income ----
   const heldInHouse = round2(totalReceived - totalPaidToSupplier);
   const supplierShareHeld = round2(heldInHouse - incomeKept); // supplier money still with us
-  const companyMoneyFronted = round2(Math.max(0, -supplierShareHeld));
+  // Company money fronted = cash actually out of pocket: more paid to the
+  // supplier than the client has paid us. (A proportional comparison would raise
+  // false alarms after discounts change the split.)
+  const companyMoneyFronted = round2(Math.max(0, totalPaidToSupplier - totalReceived));
 
   // ---- Profit vs the 4% target ----
-  const forecastProfit = round2(invoiceTotal - supplierOwed); // the built-in margin
+  const forecastProfit = round2(invoiceNet - supplierOwed); // the built-in margin
   const targetProfit = incomeExpectedTotal;
   const profitVsTarget = round2(forecastProfit - targetProfit);
 
   return {
+    // discounts
+    supplierDiscount, clientDiscount, discountKept, discountCount: dc.length,
+    proformaNet, invoiceNet, originalMargin,
+    deliveredClientNet, deliveredSupplierNet,
+    clientFeeTotal, clientFeePaid, clientFeeRemaining, clientFeePct,
     rate: keptRatio,           // the effective "our share" ratio applied to each receipt
     commissionRate: rate,      // the nominal rate stored on the deal (for reference)
     marginPct,

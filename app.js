@@ -80,7 +80,7 @@ function openModal(title, bodyHtml, footerHtml, opts = {}) {
   const root = document.getElementById('modal-root');
   root.innerHTML = `
     <div class="overlay" id="ov">
-      <div class="modal ${opts.wide ? 'wide' : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+      <div class="modal ${opts.xwide ? 'wide xwide' : opts.wide ? 'wide' : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
         <div class="modal-h"><h3>${esc(title)}</h3><button class="x" id="mx" aria-label="Close">×</button></div>
         <div class="modal-b">${bodyHtml}</div>
         ${footerHtml ? `<div class="modal-f">${footerHtml}</div>` : ''}
@@ -239,10 +239,11 @@ async function renderDeals() {
 function dealCard(d) {
   const c = d.computed, cur = d.currency, na = d.nextAction;
   const naClass = na.priority === 0 ? 'attn' : (na.code === 'complete_deal' ? 'done' : '');
-  const invoice = Number(d.invoice_total) || 0;
+  const invoice = c.invoiceNet != null ? c.invoiceNet : Number(d.invoice_total) || 0;
   const paidOut = c.totalPaidToSupplier || 0;
   const recvPct = invoice > 0 ? Math.min(100, (c.totalReceived / invoice) * 100) : 0;
-  const outPct = (Number(d.proforma_total) || 0) > 0 ? Math.min(100, (paidOut / Number(d.proforma_total)) * 100) : 0;
+  const supBase = isAdmin() && c.supplierOwed != null ? c.supplierOwed : Number(d.proforma_total) || 0;
+  const outPct = supBase > 0 ? Math.min(100, (paidOut / supBase) * 100) : 0;
   const bar = (label, val, pctv, cls, sub) => `
     <div class="dc-bar">
       <div class="dc-bar-top"><span>${label}</span><b class="${cls}">${val}</b></div>
@@ -255,7 +256,8 @@ function dealCard(d) {
         <span class="dcard-ref">${esc(d.ref)}</span>
         <span class="dcard-top-r">
           <span class="pill ${d.status === 'active' ? 'blue' : d.status === 'completed' ? 'green' : 'gray'}">${esc(d.status)}</span>
-          ${isAdmin() ? `<button class="card-edit" type="button" data-editdeal="${d.id}" aria-label="Edit details of ${esc(d.ref)}" title="Edit name, parties and invoice numbers">✎</button>` : ''}
+          <button class="card-edit" type="button" data-cardreport="${d.id}" aria-label="Full report for ${esc(d.ref)}" title="Full deal report">${icon('doc')}</button>
+          ${isAdmin() ? `<button class="card-edit" type="button" data-editdeal="${d.id}" aria-label="Edit details of ${esc(d.ref)}" title="Edit name, parties and invoice numbers">${icon('edit')}</button>` : ''}
         </span>
       </div>
       <div class="dcard-title">${esc(d.title)}</div>
@@ -400,67 +402,65 @@ async function renderDeal() {
   State._dealCompleted = deal.status === 'completed';
   const naClass = na.priority === 0 ? 'attn' : (na.code === 'complete_deal' ? 'done' : '');
 
+  const more = [
+    `<button type="button" class="menu-item" id="to-flow">Flows view</button>`,
+    isAdmin() ? `<button type="button" class="menu-item" id="deal-report">Partner report (RU)</button>` : '',
+    isAdmin() && deal.status === 'active' ? `<button type="button" class="menu-item" id="archive">Archive deal</button>` : '',
+    isAdmin() && deal.status === 'completed' ? `<button type="button" class="menu-item" id="reopen">Reopen deal</button>` : '',
+  ].join('');
   const actions = `
     <button class="btn" id="back">← Deals</button>
-    <button class="btn" id="to-flow">Flows</button>
-    ${isAdmin() ? `<button class="btn" id="deal-report">Partner report</button>` : ''}
-    ${isAdmin() && !['deleted', 'purged'].includes(deal.status) ? `<button class="btn" id="editdeal">Edit deal</button>` : ''}
-    ${isAdmin() && deal.status === 'active' ? `<button class="btn primary" id="complete">Mark complete</button>` : ''}
-    ${isAdmin() && deal.status === 'active' ? `<button class="btn" id="archive">Archive</button>` : ''}
-    ${isAdmin() && deal.status === 'completed' ? `<button class="btn" id="reopen">Reopen</button>` : ''}`;
+    <button class="btn primary" id="full-report">${icon('doc')} Full report</button>
+    ${isAdmin() && !['deleted', 'purged'].includes(deal.status) ? `<button class="btn" id="editdeal">${icon('edit')} Edit</button>` : ''}
+    ${isAdmin() && deal.status === 'active' ? `<button class="btn" id="complete">Mark complete</button>` : ''}
+    <div class="menu-wrap"><button class="btn" id="more-btn" aria-haspopup="true" aria-expanded="false">More ▾</button>
+      <div class="menu hidden" id="more-menu" role="menu">${more}</div></div>`;
 
   const roBanner = ro && !deal.closure_state ? `<div class="alert info">This deal is <b>${esc(deal.status)}</b> and read-only.${isAdmin() && deal.status === 'completed' ? ' Reopen it to add activity.' : ''}</div>` : '';
   const pendBanner = d.pendingApprovals.length
-    ? `<div class="alert warn">${d.pendingApprovals.length} submission(s) awaiting administrator approval — not yet in the ledger.</div>` : '';
-  const fundBanner = c.supplierFundingShortfall > 0
-    ? `<div class="alert err"><b>Funding difference.</b> Open supplier cost exceeds the reserve held by ${money(c.supplierFundingShortfall, cur)}. Forecast profit ${money(c.forecastProfit, cur)} vs 4% target ${money(c.targetProfit, cur)} (${money(c.profitVsTarget, cur)}).</div>` : '';
-
-  const paidToSupplier = (c.supplierInvoicePaid || 0) + (c.supplierPrepaySent || 0);
-  const supplierOwed = c.supplierOwed != null ? c.supplierOwed : (deal.proforma_total || 0);
-  const recvPct = deal.invoice_total > 0 ? Math.min(100, c.totalReceived / deal.invoice_total * 100) : 0;
-  const paidPct = supplierOwed > 0 ? Math.min(100, paidToSupplier / supplierOwed * 100) : 0;
-  const incPct = c.incomeExpectedTotal > 0 ? Math.min(100, c.incomeKept / c.incomeExpectedTotal * 100) : 0;
+    ? `<div class="alert warn">${d.pendingApprovals.length} submission(s) awaiting administrator approval — not yet counted.</div>` : '';
+  const frontBanner = isAdmin() && c.companyMoneyFronted > 0.005
+    ? `<div class="alert err"><b>Company money fronted:</b> ${money(c.companyMoneyFronted, cur)} more has been paid to the supplier than the client has paid in.</div>` : '';
 
   shell(deal.ref, `
-    ${roBanner}${pendBanner}${isAdmin() ? fundBanner : ''}
-    <div class="deal-head">
-      <h2>${esc(deal.title)}</h2>
-      <span class="pill ${deal.status === 'active' ? 'blue' : deal.status === 'completed' ? 'green' : 'gray'}">${esc(deal.status)}</span>
+    ${roBanner}${pendBanner}${frontBanner}
+    <div class="dh">
+      <div class="dh-main">
+        <div class="dh-ref">${esc(deal.ref)} <span class="pill ${deal.status === 'active' ? 'blue' : deal.status === 'completed' ? 'green' : 'gray'}">${esc(deal.status)}</span></div>
+        <h2>${esc(deal.title)}</h2>
+        <div class="dh-parties">${esc(deal.customer_name)} <span>·</span> ${esc(deal.supplier_name)}</div>
+        ${invoiceNumbers(deal)}
+      </div>
+      ${!ro ? `<div class="dh-next ${naClass}"><span>Next step</span><b>${esc(na.label)}</b></div>` : ''}
     </div>
-    <div class="parties muted" style="margin-bottom:8px">${esc(deal.customer_name)} &nbsp;·&nbsp; ${esc(deal.supplier_name)}</div>
-    ${invoiceNumbers(deal)}
     ${closurePanel(d)}
-    ${!ro ? `<div class="nextline"><span class="nextline-k">Next:</span> ${esc(na.label)}</div>` : ''}
+    ${keyFacts(d)}
+    ${!ro && canWrite() ? `<div class="actionbar">
+      ${isAdmin() ? `<button class="btn primary" id="q-received">${icon('in')} Payment in</button>
+      <button class="btn" id="q-paid">${icon('out')} Payment out</button>` : ''}
+      <button class="btn ${isAdmin() ? '' : 'primary'}" id="q-delivery">${icon('box')} Delivery</button>
+      ${isAdmin() ? `<button class="btn" id="q-discount">${icon('tag')} Discount</button>` : ''}
+      ${isOffice() ? `<span class="meta">Payments and discounts are entered by Europa. Deliveries you add are sent for approval.</span>` : ''}
+    </div>` : ''}
 
-    <!-- THE DEAL AT A GLANCE: live diagram of both flows -->
-    ${dealDiagram(d)}
-
-    ${!ro && canWrite() ? `
-    <div class="quick-actions">
-      ${isAdmin() ? `<button class="btn primary big-btn" id="q-received">＋&nbsp; Money in from client</button>
-      <button class="btn big-btn" id="q-paid">＋&nbsp; Money out to supplier</button>` : ''}
-      <button class="btn ${isAdmin() ? '' : 'primary'} big-btn" id="q-delivery">＋&nbsp; Add a delivery</button>
-    </div>
-    ${isOffice() ? `<div class="meta" style="margin-top:8px">Payments are entered by Europa. Deliveries you add are sent for approval.</div>` : ''}` : ''}
-
-    <!-- MONEY FLOW: payments in and out -->
-    ${paymentsCard(d, cur, ro)}
-
-    <!-- GOODS FLOW: deliveries against the proforma -->
-    ${deliveryCard(d, cur)}
-    ${goodsDiagram(d)}
-
-    <!-- DOCUMENTS -->
-    <div class="section-title" style="margin:24px 0 12px">Documents — tap a tile to upload</div>
-    <div class="tiles">
-      ${uploadTile(d, 'Supplier proforma', 'Supplier proformas', '📄', ro)}
-      ${uploadTile(d, 'Our invoice to client', 'Customer invoices', '🧾', ro)}
-      ${uploadTile(d, 'Delivery invoices', 'Delivery notes', '🚚', ro)}
+    <div class="deal-cols">
+      <div class="deal-col">
+        ${paymentsCard(d, cur, ro)}
+        ${deliveryCard(d, cur)}
+        ${discountsCard(d, ro)}
+      </div>
+      <div class="deal-col side">
+        ${flowsCard(d)}
+        ${card('Documents', `<div class="tiles compact">
+          ${uploadTile(d, 'Supplier proforma', 'Supplier proformas', '📄', ro)}
+          ${uploadTile(d, 'Our invoice to client', 'Customer invoices', '🧾', ro)}
+          ${uploadTile(d, 'Delivery invoices', 'Delivery notes', '🚚', ro)}
+        </div>`)}
+      </div>
     </div>
 
-    <!-- OPTIONAL FULL DETAIL -->
-    <button class="collapse-h details-main" id="details-toggle" style="margin-top:26px"><span class="chev">▶</span> Show full details &amp; history</button>
-    <div id="details-body" class="hidden" style="margin-top:14px">
+    <button class="collapse-h details-main" id="details-toggle" style="margin-top:18px"><span class="chev">▶</span> Show full details &amp; history</button>
+    <div id="details-body" class="hidden" style="margin-top:12px">
       ${sectionCloseout(c, cur, deal)}
       ${sectionDocuments(d, cur)}
       ${sectionAudit()}
@@ -468,7 +468,541 @@ async function renderDeal() {
   `, actions);
 
   wireDeal(d);
+  wireFlowsCard();
   wireDiagram();
+  wireDiscounts(d);
+  const mb = document.getElementById('more-btn'), mm = document.getElementById('more-menu');
+  if (mb) mb.onclick = (e) => { e.stopPropagation(); mm.classList.toggle('hidden'); mb.setAttribute('aria-expanded', String(!mm.classList.contains('hidden'))); };
+  document.addEventListener('click', () => { if (mm) mm.classList.add('hidden'); }, { once: true });
+  const fr = document.getElementById('full-report');
+  if (fr) fr.onclick = () => dealReportModal(deal.id);
+  const qd = document.getElementById('q-discount');
+  if (qd) qd.onclick = () => discountModal(d);
+}
+
+/* ================= DISCOUNTS =================
+   Two sides per discount: what the supplier took off our proforma (with their
+   discount invoice or letter) and what we pass on to the client (with ours). */
+function discountsCard(d, ro) {
+  const c = d.computed, cur = d.deal.currency, admin = isAdmin();
+  const rows = (d.discounts || []).filter((x) => x.status !== 'void');
+  if (!rows.length && (!admin || ro)) return '';
+  const docOf = (type, id) => (d.documents || []).find((x) => x.link_type === type && x.link_id === id);
+  const list = rows.length ? rows.map((x) => {
+    const sd = docOf('discount_supplier', x.id), cd = docOf('discount_client', x.id);
+    const cAmt = Number(x.client_amount) || 0, sAmt = Number(x.supplier_amount) || 0;
+    return `<div class="disc-row">
+      <div class="disc-date">${fdate(x.date)}</div>
+      <div class="disc-sides">
+        ${admin ? `<div class="disc-side"><span class="disc-k">From supplier</span><b>${money(sAmt, cur)}</b>${x.supplier_ref ? ` <span class="meta">${esc(x.supplier_ref)}</span>` : ''}
+          ${sd ? `<a href="#" data-preview="${sd.id}" class="pill green">view document</a>` : sAmt > 0 ? '<span class="pill red">no document</span>' : ''}</div>` : ''}
+        <div class="disc-side"><span class="disc-k">${admin ? 'To client' : 'Discount on your invoice'}</span><b>${money(cAmt, cur)}</b>${x.client_ref ? ` <span class="meta">${esc(x.client_ref)}</span>` : ''}
+          ${cd ? `<a href="#" data-preview="${cd.id}" class="pill green">view document</a>`
+            : cAmt > 0 ? (admin ? `<button class="btn sm" data-discdoc="${x.id}">Attach our document</button>` : '<span class="pill amber">document to follow</span>') : (admin ? '<span class="meta">not passed on</span>' : '')}</div>
+      </div>
+      ${admin ? `<div class="disc-act">${cAmt > 0 ? `<button class="btn sm" data-discletter="${x.id}">Letter to client</button>` : ''}${!ro ? `<button class="btn sm danger" data-discvoid="${x.id}">Void</button>` : ''}</div>` : ''}
+    </div>`;
+  }).join('') : '<div class="empty small">No discounts on this deal.</div>';
+  const summary = !rows.length ? '' : admin
+    ? `<div class="rowset" style="margin-bottom:12px">
+        ${row('Discount received from supplier', money(c.supplierDiscount, cur), 'green')}
+        ${row('Passed on to client', money(c.clientDiscount, cur))}
+        ${row(c.discountKept >= 0 ? 'Kept — adds to our income' : 'Given above the supplier discount', money(Math.abs(c.discountKept), cur), c.discountKept >= 0 ? 'gold' : 'red')}
+        ${row('Proforma after discount', money(c.proformaNet, cur))}
+        ${row('Invoice to client after discount', money(c.invoiceNet, cur))}
+      </div>`
+    : `<div class="rowset" style="margin-bottom:12px">${row('Total discount on your invoice', money(c.clientDiscount, cur), 'green')}${row('Invoice after discount', money(c.invoiceNet, cur))}</div>`;
+  const add = admin && !ro ? `<button class="btn sm primary" id="disc-add">${icon('tag')} Add discount</button>` : '';
+  return card('Discounts', summary + list, add);
+}
+
+function discountModal(d) {
+  const deal = d.deal, c = d.computed, cur = deal.currency;
+  const ratio = Number(deal.proforma_total) > 0 ? Number(deal.invoice_total) / Number(deal.proforma_total) : 1;
+  const m = (x) => money(x, cur);
+  const body = `
+    <div class="field" style="max-width:220px"><label>Date</label><input id="ds_date" type="date" value="${today()}"/></div>
+    <div class="disc-form">
+      <div class="disc-box">
+        <div class="disc-box-h">From the supplier</div>
+        <div class="field"><label>Discount on the proforma</label><input id="ds_samt" inputmode="decimal" placeholder="0.00"/>
+          <div class="hint">Proforma now ${m(c.proformaNet)}</div></div>
+        <div class="field"><label>Their document number</label><input id="ds_sref" placeholder="credit note / letter no."/></div>
+        <label class="ureq" id="ds_sf_l"><span class="uicon">📄</span><span class="utx"><b>Supplier's discount invoice or letter</b><em id="ds_sf_n">required if there is a supplier discount</em></span>
+          <input type="file" id="ds_sf" accept="application/pdf,image/png,image/jpeg" hidden/></label>
+      </div>
+      <div class="disc-box">
+        <div class="disc-box-h">To the client</div>
+        <div class="field"><label>Discount on our invoice</label><input id="ds_camt" inputmode="decimal" placeholder="0.00"/>
+          <div class="chips" id="ds_chips">
+            <button type="button" class="chip" data-pass="prop">Same proportion</button>
+            <button type="button" class="chip" data-pass="same">Same amount</button>
+            <button type="button" class="chip" data-pass="none">Nothing now</button>
+          </div>
+          <div class="hint">Invoice now ${m(c.invoiceNet)}</div></div>
+        <div class="field"><label>Our document number</label><input id="ds_cref" placeholder="our credit note no."/></div>
+        <label class="ureq" id="ds_cf_l"><span class="uicon">🧾</span><span class="utx"><b>Our discount invoice or letter</b><em id="ds_cf_n">optional now — can be attached later</em></span>
+          <input type="file" id="ds_cf" accept="application/pdf,image/png,image/jpeg" hidden/></label>
+      </div>
+    </div>
+    <div class="disc-preview" id="ds_prev"><div class="meta">Enter the amounts to see the effect.</div></div>
+    <div class="field" style="margin-top:12px"><label>Notes (internal)</label><textarea id="ds_notes" placeholder="e.g. quality discount on batch 2"></textarea></div>
+    <div id="ds_err" class="alert err hidden"></div>`;
+  const close = openModal('Add discount — ' + deal.ref, body,
+    `<button class="btn" id="ds_no">Cancel</button><button class="btn primary" id="ds_yes">Apply discount</button>`, { wide: true });
+  const sIn = document.getElementById('ds_samt'), cIn = document.getElementById('ds_camt');
+  const val = (el) => { const x = parseAmount(el.value); return Number.isFinite(x) && x > 0 ? Math.round(x * 100) / 100 : 0; };
+  const preview = () => {
+    const sA = val(sIn), cA = val(cIn);
+    const box = document.getElementById('ds_prev');
+    if (!sA && !cA) { box.innerHTML = '<div class="meta">Enter the amounts to see the effect.</div>'; return; }
+    const P0 = c.proformaNet, I0 = c.invoiceNet, P1 = Math.max(0, P0 - sA), I1 = Math.max(0, I0 - cA);
+    const inc0 = Math.max(0, I0 - P0), inc1 = Math.max(0, I1 - P1);
+    const paidOut = c.totalPaidToSupplier || 0;
+    const due1 = Math.max(0, I1 - c.totalApplied), credit1 = Math.max(0, c.totalReceived - I1);
+    const open1 = Math.max(0, P1 - paidOut), supOwes1 = Math.max(0, paidOut - P1);
+    const line = (k, a, b, cls) => `<div class="pv-row"><span>${k}</span><span class="pv-was">${a}</span><span class="pv-arrow">→</span><b class="${cls || ''}">${b}</b></div>`;
+    const diff = inc1 - inc0;
+    box.innerHTML = `
+      ${line('Supplier proforma', m(P0), m(P1))}
+      ${line('Invoice to client', m(I0), m(I1))}
+      ${line('Our income on the deal', m(inc0), m(inc1), diff > 0.005 ? 'green' : diff < -0.005 ? 'red' : '')}
+      ${line('Client still to pay', m(c.customerBalance), m(due1))}
+      ${line('We still owe the supplier', m(c.supplierOpenToPay || 0), m(open1))}
+      ${credit1 > 0.005 ? `<div class="pv-note">The client has already paid more than the new invoice: a credit of <b>${m(credit1)}</b> is owed back to them (refund or apply to another deal).</div>` : ''}
+      ${supOwes1 > 0.005 ? `<div class="pv-note">We have already paid more than the new proforma: the supplier owes us <b>${m(supOwes1)}</b>.</div>` : ''}
+      <div class="pv-sum">${diff > 0.005 ? `You keep <b>${m(diff)}</b> of this discount as extra income.` : diff < -0.005 ? `You give the client <b>${m(-diff)}</b> more than the supplier gave you.` : 'Your income stays the same.'}
+        Margin after: <b>${P1 > 0 ? ((inc1 / P1) * 100).toFixed(2) : '0.00'}%</b> on the proforma.</div>`;
+  };
+  sIn.oninput = preview; cIn.oninput = preview;
+  document.querySelectorAll('#ds_chips [data-pass]').forEach((b) => (b.onclick = () => {
+    const sA = val(sIn);
+    cIn.value = b.dataset.pass === 'prop' ? (Math.round(sA * ratio * 100) / 100 || '') : b.dataset.pass === 'same' ? (sA || '') : '';
+    preview();
+  }));
+  const bindFile = (inp, lab, nm) => document.getElementById(inp).addEventListener('change', (e) => {
+    const f = e.target.files[0]; document.getElementById(nm).textContent = f ? f.name : 'no file chosen';
+    document.getElementById(lab).classList.toggle('ok', !!f);
+  });
+  bindFile('ds_sf', 'ds_sf_l', 'ds_sf_n'); bindFile('ds_cf', 'ds_cf_l', 'ds_cf_n');
+  document.getElementById('ds_no').onclick = close;
+  document.getElementById('ds_yes').onclick = async () => {
+    const sA = val(sIn), cA = val(cIn), sf = document.getElementById('ds_sf').files[0], cf = document.getElementById('ds_cf').files[0];
+    if (!sA && !cA) return showErr('ds_err', 'Enter the supplier discount, the client discount, or both.');
+    if (sA > 0 && !sf) return showErr('ds_err', "Attach the supplier's discount invoice or letter.");
+    const fd = new FormData();
+    fd.append('date', v('ds_date')); fd.append('supplier_amount', String(sA)); fd.append('client_amount', String(cA));
+    fd.append('supplier_ref', v('ds_sref')); fd.append('client_ref', v('ds_cref')); fd.append('notes', document.getElementById('ds_notes').value);
+    if (sf) fd.append('supplier_file', sf);
+    if (cf) fd.append('client_file', cf);
+    try {
+      const r = await api('/deals/' + deal.id + '/discounts', { method: 'POST', body: fd });
+      close(); ok('Discount applied.'); await renderDeal();
+      if (cA > 0 && !cf) discountLetterModal(State.cache.deal, r.id);   // help prepare our document right away
+    } catch (e) { showErr('ds_err', e.message); }
+  };
+}
+
+function wireDiscounts(d) {
+  const add = document.getElementById('disc-add');
+  if (add) add.onclick = () => discountModal(d);
+  document.querySelectorAll('[data-discletter]').forEach((b) => (b.onclick = () => discountLetterModal(d, Number(b.dataset.discletter))));
+  document.querySelectorAll('[data-discdoc]').forEach((b) => (b.onclick = () => {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = 'application/pdf,image/png,image/jpeg';
+    input.onchange = async () => {
+      const f = input.files[0]; if (!f) return;
+      const fd = new FormData();
+      fd.append('file', f); fd.append('category', 'Client discount documents');
+      fd.append('link_type', 'discount_client'); fd.append('link_id', b.dataset.discdoc);
+      try { await api('/deals/' + d.deal.id + '/documents', { method: 'POST', body: fd }); ok('Document attached.'); renderDeal(); }
+      catch (e) { err(e.message); }
+    };
+    input.click();
+  }));
+  document.querySelectorAll('[data-discvoid]').forEach((b) => (b.onclick = () => {
+    const body = `<p>Void this discount? Totals go back to what they were before it. It stays visible in the history.</p>
+      <div class="field"><label>Reason (required)</label><textarea id="dsv_r"></textarea></div><div id="dsv_e" class="alert err hidden"></div>`;
+    const close = openModal('Void discount', body, `<button class="btn" id="dsv_no">Cancel</button><button class="btn danger" id="dsv_yes">Void discount</button>`);
+    document.getElementById('dsv_no').onclick = close;
+    document.getElementById('dsv_yes').onclick = async () => {
+      try { await api('/discounts/' + b.dataset.discvoid + '/void', { method: 'POST', body: { reason: v('dsv_r') } }); close(); ok('Discount voided.'); renderDeal(); }
+      catch (e) { showErr('dsv_e', e.message); }
+    };
+  }));
+}
+
+/* Our discount letter / credit note text for the client (deterministic). */
+function discountLetterText(d, x, lang) {
+  const deal = d.deal, c = d.computed, cur = deal.currency;
+  const amt = Number(x.client_amount) || 0;
+  const invNo = deal.invoice_number ? (lang === 'ru' ? ` № ${deal.invoice_number}` : ` ${deal.invoice_number}`) : '';
+  const credit = Math.max(0, c.totalReceived - c.invoiceNet);
+  const signer = State.user && State.user.name && State.user.name !== 'Administrator' ? State.user.name + '\n' : '';
+  if (lang === 'ru') {
+    const n = (v) => ruNum(v) + ' €';
+    return `Тема: Скидка по инвойсу${invNo} — сделка ${deal.ref}
+
+Уважаемые коллеги ${deal.customer_name},
+
+Настоящим подтверждаем скидку в размере ${n(amt)} по нашему инвойсу${invNo} (сделка ${deal.ref}) на сумму ${n(deal.invoice_total)}.
+
+С учетом скидки${c.discountCount > 1 ? ' (всего скидок: ' + n(c.clientDiscount) + ')' : ''} сумма инвойса составляет ${n(c.invoiceNet)}.
+На сегодняшний день вами оплачено ${n(c.totalReceived)}. ${credit > 0.005 ? `Ваша переплата составляет ${n(credit)} — по согласованию мы вернем ее или зачтем в счет следующей сделки.` : `Остаток к оплате: ${n(c.customerBalance)}.`}
+
+${x.client_ref ? `Настоящее письмо является кредит-нотой № ${x.client_ref}.\n\n` : ''}С уважением,
+${signer}Europa Pharmaceutical s. r. o.
+${ruDate(x.date)}`;
+  }
+  const n = (v) => money(v, cur);
+  return `Subject: Discount on invoice${invNo} — deal ${deal.ref}
+
+Dear ${deal.customer_name} team,
+
+We are pleased to confirm a discount of ${n(amt)} on our invoice${invNo} for deal ${deal.ref}, originally issued for ${n(deal.invoice_total)}.
+
+After the discount${c.discountCount > 1 ? ` (total discounts ${n(c.clientDiscount)})` : ''}, the invoice amount is ${n(c.invoiceNet)}.
+You have paid ${n(c.totalReceived)} to date. ${credit > 0.005 ? `This leaves a credit of ${n(credit)} in your favour, which we will refund or apply to your next deal, as agreed.` : `The remaining balance is ${n(c.customerBalance)}.`}
+
+${x.client_ref ? `This letter serves as our credit note ${x.client_ref}.\n\n` : ''}Kind regards,
+${signer}Europa Pharmaceutical s. r. o.
+${fdate(x.date)}`;
+}
+function discountLetterModal(d, discId) {
+  const x = (d.discounts || []).find((r) => r.id === discId);
+  if (!x) return;
+  const body = `
+    <div class="field" style="max-width:220px"><label>Language</label><select id="dl_lang"><option value="en">English</option><option value="ru">Русский</option></select></div>
+    <div class="field"><label>Letter to the client — edit freely, then send it and attach the final version</label>
+      <textarea id="dl_text" class="rep-text" spellcheck="false"></textarea></div>`;
+  const close = openModal('Discount letter to client — ' + d.deal.ref, body,
+    `<button class="btn" id="dl_close">Close</button><button class="btn primary" id="dl_copy">Copy letter</button>`, { wide: true });
+  const build = () => { document.getElementById('dl_text').value = discountLetterText(d, x, v('dl_lang')); };
+  document.getElementById('dl_lang').onchange = build;
+  document.getElementById('dl_close').onclick = close;
+  document.getElementById('dl_copy').onclick = async () => {
+    const ta = document.getElementById('dl_text'); ta.select();
+    try { await navigator.clipboard.writeText(ta.value); } catch { document.execCommand('copy'); }
+    ok('Letter copied.');
+  };
+  build();
+}
+
+/* ================= FULL DEAL REPORT =================
+   A complete, shareable account of one deal at the moment it is requested:
+   value, every payment in and out with dates and running balances, every
+   delivery, discounts, reconciliation, timeline and documents. Built only
+   from the deal's records, so the same data always gives the same report. */
+async function iconDataUrl() {
+  if (State._iconData !== undefined) return State._iconData;
+  try {
+    const b = await (await fetch('/img/europa-icon.png')).blob();
+    State._iconData = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(b); });
+  } catch { State._iconData = location.origin + '/img/europa-icon.png'; }
+  return State._iconData;
+}
+
+function buildDealReport(d, o) {
+  const deal = d.deal, c = d.computed, cur = deal.currency;
+  const internal = !!o.internal;
+  const m = (v) => money(v, cur);
+  const e = (v) => esc(v == null || v === '' ? '—' : v);
+  const posted = (arr) => (arr || []).filter((x) => x.status === 'posted');
+  const voided = (arr) => (arr || []).filter((x) => x.status === 'void');
+  const byDate = (k) => (a, b) => String(a[k] || '').localeCompare(String(b[k] || '')) || a.id - b.id;
+  const cps = posted(d.customerPayments).sort(byDate('date'));
+  const sps = posted(d.supplierPayments).sort(byDate('date'));
+  const dels = posted(d.supplierInvoices).map((x) => ({ ...x, _d: x.delivery_date || x.issue_date })).sort(byDate('_d'));
+  const discs = posted(d.discounts).sort(byDate('date')).filter((x) => internal || Number(x.client_amount) > 0);
+  const invoiceNet = c.invoiceNet != null ? c.invoiceNet : Number(deal.invoice_total);
+  const proforma = Number(deal.proforma_total) || 0;
+  const paidOut = sps.reduce((a, p) => a + Number(p.amount || 0), 0);
+  const feeExt = c.clientFeeTotal != null ? c.clientFeeTotal : c.feeTotal;          // the 4% inside the client's invoice
+  const feeExtPaid = c.clientFeePaid != null ? c.clientFeePaid : c.feePaid;
+  const docs = (d.documents || []).filter((x) => internal || x.category !== 'Supplier discount documents');
+  const now = new Date();
+  const stamp = `${fdate(now.toISOString())} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const deliveredNetClient = c.deliveredClientNet != null ? c.deliveredClientNet : c.deliveredClient;
+  const supNet = c.proformaNet != null ? c.proformaNet : proforma;
+
+  // which client payment each supplier payment forwarded (same rule as the partner report)
+  const { fwd } = forwardingByPayment(cps, sps);
+  const fundedLabel = (sp) => {
+    const cp = cps.find((p) => p.id === sp.funded_by) || cps.filter((p) => String(p.date || '') <= String(sp.date || '')).slice(-1)[0];
+    return cp ? `${fdate(cp.date)} (${m(cp.amount_received)})` : '—';
+  };
+
+  const fact = (label, value, sub, cls) => `<div class="f ${cls || ''}"><div class="fl">${label}</div><div class="fv">${value}</div><div class="fs">${sub}</div></div>`;
+  // Column alignment per table: 'l' text (left), 'n' amounts (right). Set by tbl() for its rows.
+  let AL = '';
+  const tr = (cells, cls) => `<tr class="${cls || ''}">${cells.map((x, i) => `<td class="${(AL[i] || 'n') === 'n' && i ? 'n' : ''}">${x}</td>`).join('')}</tr>`;
+  const tbl = (head, rowsFn, footFn, align) => {
+    const prev = AL; AL = align || ''.padEnd(head.length, 'n');
+    const rows = typeof rowsFn === 'function' ? rowsFn() : rowsFn;
+    const foot = typeof footFn === 'function' ? footFn() : footFn;
+    const hasHead = head.some((h) => h);
+    const html = `<table class="${hasHead ? '' : 'kv'}">${hasHead ? `<thead><tr>${head.map((h, i) => `<th class="${(AL[i] || 'n') === 'n' && i ? 'n' : ''}">${h}</th>`).join('')}</tr></thead>` : ''}<tbody>${rows.join('')}</tbody>${foot ? `<tfoot>${foot}</tfoot>` : ''}</table>`;
+    AL = prev; return html;
+  };
+  const check = (label, ok, text) => `<div class="chk ${ok ? 'ok' : 'warn'}"><b>${label}</b> ${text}</div>`;
+
+  // ---- 1. summary
+  const summary = `<div class="facts">
+    ${fact('Deal value', m(invoiceNet), c.clientDiscount > 0.005 ? `after ${m(c.clientDiscount)} discount` : 'invoice to client')}
+    ${fact('Received from client', m(c.totalReceived), `${cps.length} payment${cps.length === 1 ? '' : 's'}`, 'in')}
+    ${fact('Still due from client', m(c.customerBalance), c.customerOverpayment > 0.005 ? `client credit ${m(c.customerOverpayment)}` : c.customerBalance > 0.005 ? 'outstanding' : 'fully paid', c.customerBalance > 0.005 ? 'due' : 'ok')}
+    ${fact('Paid to supplier', m(paidOut), internal ? (c.supplierOverpaid > 0.005 ? `supplier owes us ${m(c.supplierOverpaid)}` : `${m(c.supplierOpenToPay)} still to pay`) : `${sps.length} payment${sps.length === 1 ? '' : 's'}`, 'out')}
+    ${fact('Goods delivered', m(c.deliveredValue), `${pct(c.deliveryPct)} of proforma · ${m(c.deliveryOutstanding)} to go`, 'goods')}
+    ${internal ? fact('Europa income', m(c.feeTotal), `${m(c.incomeKept)} earned · ${m(c.incomeRemaining)} to come`, 'gold')
+      : fact('Agreed 4% fee', m(feeExt), `${m(feeExtPaid)} covered by payments`, 'gold')}
+  </div>`;
+
+  // ---- 2. parties & references
+  const closure = deal.closure_state === 'awaiting_letter' ? `Completed — awaiting manufacturer balance letter (${m(deal.closure_balance)})`
+    : deal.closure_state === 'closed' ? (Number(deal.closure_balance) > 0.005 ? `Closed — manufacturer balance ${m(deal.closure_balance)} confirmed by letter` : 'Completed and closed')
+      : deal.status === 'active' ? 'Active' : deal.status;
+  const parties = tbl(['', ''], () => [
+    tr(['Client', e(deal.customer_name)]), tr(['Supplier', e(deal.supplier_name)]),
+    tr(['Deal reference', e(deal.ref)]), tr(['Supplier proforma number', e(deal.proforma_number)]),
+    tr(['Our invoice number', e(deal.invoice_number)]), tr(['Opened', e(fdate(deal.created_at))]),
+    tr(['Status', e(closure)]), ...(deal.completed_at ? [tr(['Completed', e(fdate(deal.completed_at))])] : []),
+  ], null, 'ln');
+
+  // ---- 3. how the value is made up
+  const valueRows = () => [
+    tr(['Supplier proforma', m(proforma)]),
+    ...(internal && c.supplierDiscount > 0.005 ? [tr(['Less: discounts from supplier', '−' + m(c.supplierDiscount)]), tr(['Proforma after discounts', `<b>${m(supNet)}</b>`])] : []),
+    tr(['Invoice to client', m(deal.invoice_total)]),
+    ...(c.clientDiscount > 0.005 ? [tr(['Less: discounts to client', '−' + m(c.clientDiscount)])] : []),
+    tr(['<b>Invoice after discounts</b>', `<b>${m(invoiceNet)}</b>`]),
+    internal ? tr(['Europa income (invoice − proforma)', `<b>${m(c.feeTotal)}</b> · ${(c.marginPct || 0).toFixed(2)}% on proforma`])
+      : tr(['Of which: agreed 4% fee', m(feeExt)]),
+    ...(internal && Math.abs(c.discountKept || 0) > 0.005 ? [tr([c.discountKept > 0 ? 'Of which kept from supplier discounts' : 'Of which given above supplier discounts', m(Math.abs(c.discountKept))])] : []),
+  ];
+
+  // ---- 4. payments in
+  let run = 0;
+  const inRows = () => { run = 0; return cps.map((p, i) => { run += Number(p.amount_received) || 0;
+    return tr([`${i + 1}. ${fdate(p.date)}`, m(p.amount_received), e(p.bank_ref), m(run), m(Math.max(0, invoiceNet - run))]); }); };
+  const paymentsIn = cps.length ? tbl(['Date', 'Amount', 'Reference', 'Total received', 'Balance after'], inRows,
+    () => tr(['<b>Total</b>', `<b>${m(c.totalReceived)}</b>`, '', '', `<b>${m(c.customerBalance)}</b>`], 'tot'), 'lnlnn') : '<p class="none">No payments received yet.</p>';
+
+  // ---- 5. payments out
+  const outRows = () => { run = 0; return sps.map((p, i) => { run += Number(p.amount) || 0;
+    return tr([`${i + 1}. ${fdate(p.date)}`, m(p.amount), e(p.bank_ref), fundedLabel(p), m(run), ...(internal ? [m(Math.max(0, supNet - run))] : [])]); }); };
+  const paymentsOut = sps.length ? tbl(['Date', 'Amount', 'Reference', 'Forwarding client payment of', 'Total paid', ...(internal ? ['Still to pay after'] : [])], outRows,
+    () => tr(['<b>Total</b>', `<b>${m(paidOut)}</b>`, '', '', '', ...(internal ? [`<b>${m(c.supplierOpenToPay)}</b>`] : [])], 'tot'), 'lnllnn') : '<p class="none">No payments sent to the supplier yet.</p>';
+  const fwdNote = cps.length && sps.length ? `<p class="note">Forwarded per client payment: ${cps.map((p) => `${fdate(p.date)} ${m(p.amount_received)} → ${m(fwd.get(p.id) || 0)} sent to supplier`).join('; ')}.</p>` : '';
+
+  // ---- 6. deliveries
+  const delRows = () => { run = 0; return dels.map((x, i) => { run += Number(x.proforma_allocated) || 0;
+    return tr([`${i + 1}. ${fdate(x._d)}`, e(x.invoice_number), m(x.proforma_allocated || 0), e(x.quantity), m(run), m(Math.max(0, proforma - run))]); }); };
+  const deliveries = dels.length ? tbl(['Date', 'Delivery invoice', 'Proforma value', 'Quantity', 'Delivered so far', 'Still to deliver'], delRows,
+    () => tr(['<b>Total</b>', '', `<b>${m(c.deliveredValue)}</b>`, '', `<b>${pct(c.deliveryPct)}</b>`, `<b>${m(c.deliveryOutstanding)}</b>`], 'tot'), 'llnlnn') : '<p class="none">No deliveries yet.</p>';
+
+  // ---- 7. discounts
+  const discRows = () => discs.map((x) => tr([fdate(x.date), ...(internal ? [m(x.supplier_amount || 0), e(x.supplier_ref)] : []), m(x.client_amount || 0), e(x.client_ref)]));
+  const discounts = discs.length ? `<h2>Discounts</h2>` + tbl(['Date', ...(internal ? ['From supplier', 'Supplier document'] : []), internal ? 'To client' : 'Discount', internal ? 'Our document' : 'Credit note'], discRows, null, internal ? 'lnlnl' : 'lnl') : '';
+
+  // ---- 8. balances & checks
+  const cliGap = Math.round(((deliveredNetClient || 0) - c.totalReceived) * 100) / 100;
+  const supGap = Math.round(((c.deliveredSupplierNet != null ? c.deliveredSupplierNet : c.deliveredValue) - paidOut) * 100) / 100;
+  const checks = [
+    check('Client balance:', c.customerBalance < 0.005 && c.customerOverpayment < 0.005,
+      c.customerOverpayment > 0.005 ? `the client has overpaid by ${m(c.customerOverpayment)} (credit in their favour).` : c.customerBalance > 0.005 ? `${m(c.customerBalance)} is still due from the client.` : 'the client has paid in full.'),
+    check('Client payments vs goods received:', Math.abs(cliGap) < 0.005,
+      cliGap > 0.005 ? `goods worth ${m(deliveredNetClient)} have been received; ${m(cliGap)} of that is not yet paid.` : cliGap < -0.005 ? `the client has paid ${m(-cliGap)} ahead of deliveries.` : 'payments match the goods received.'),
+    ...(internal ? [
+      check('Supplier balance:', (c.supplierOpenToPay || 0) < 0.005 && (c.supplierOverpaid || 0) < 0.005,
+        c.supplierOverpaid > 0.005 ? `we have paid ${m(c.supplierOverpaid)} more than the proforma after discounts — the supplier owes us this amount.` : c.supplierOpenToPay > 0.005 ? `${m(c.supplierOpenToPay)} is still to be paid to the supplier.` : 'the supplier has been paid in full.'),
+      check('Supplier payments vs goods delivered:', Math.abs(supGap) < 0.005,
+        supGap > 0.005 ? `goods worth ${m(supGap)} have been delivered but not yet paid for.` : supGap < -0.005 ? `${m(-supGap)} has been paid ahead of deliveries.` : 'payments match the goods delivered.'),
+      check('Cash position:', (c.companyMoneyFronted || 0) < 0.005,
+        `${m(c.heldInHouse)} is held now (received − paid out); ${m(c.incomeKept)} of it is Europa income earned so far.` + (c.companyMoneyFronted > 0.005 ? ` Company money fronted: ${m(c.companyMoneyFronted)}.` : '')),
+    ] : []),
+    check('Deliveries:', (c.deliveryOutstanding || 0) < 0.005,
+      c.deliveryOutstanding > 0.005 ? `${pct(c.deliveryPct)} delivered; goods worth ${m(c.deliveryOutstanding)} (proforma value) are still to be delivered.` : 'all goods on the proforma have been delivered.'),
+  ].join('');
+
+  // ---- 9. timeline
+  const events = [
+    ...cps.map((p) => ({ d: p.date, k: 'Payment received', t: `from ${deal.customer_name}`, a: m(p.amount_received) })),
+    ...sps.map((p) => ({ d: p.date, k: 'Payment sent', t: `to ${deal.supplier_name}`, a: m(p.amount) })),
+    ...dels.map((x) => ({ d: x._d, k: 'Delivery', t: `${x.invoice_number}${x.quantity ? ' · ' + x.quantity : ''}`, a: m(x.proforma_allocated || 0) })),
+    ...discs.map((x) => ({ d: x.date, k: 'Discount', t: internal ? `supplier ${m(x.supplier_amount || 0)} / client` : 'on the invoice', a: m(x.client_amount || 0) })),
+  ].sort((a, b) => String(a.d || '').localeCompare(String(b.d || '')));
+  const timeline = events.length ? tbl(['Date', 'Event', 'Details', 'Amount'], () => events.map((x) => tr([fdate(x.d), x.k, esc(x.t), x.a])), null, 'llln') : '<p class="none">No activity yet.</p>';
+
+  // ---- 10. documents, voided entries
+  const documents = docs.length ? tbl(['Category', 'File', 'Added', 'Status'], () => docs.map((x) => tr([esc(x.category), esc(x.original_name), fdate(x.created_at), esc(x.status)])), null, 'llll') : '<p class="none">No documents on file.</p>';
+  const voids = !internal ? [] : () => [
+    ...voided(d.customerPayments).map((p) => tr([fdate(p.date), 'Payment received', m(p.amount_received), e(p.void_reason)])),
+    ...voided(d.supplierPayments).map((p) => tr([fdate(p.date), 'Payment sent', m(p.amount), e(p.void_reason)])),
+    ...voided(d.supplierInvoices).map((x) => tr([fdate(x.delivery_date || x.issue_date), `Delivery ${esc(x.invoice_number)}`, m(x.proforma_allocated || 0), e(x.void_reason)])),
+    ...voided(d.discounts).map((x) => tr([fdate(x.date), 'Discount', m(x.client_amount || 0), e(x.void_reason)])),
+  ];
+  const voidList = typeof voids === 'function' ? voids : () => [];
+  const voidCount = internal ? (voided(d.customerPayments).length + voided(d.supplierPayments).length + voided(d.supplierInvoices).length + voided(d.discounts).length) : 0;
+
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Deal report ${esc(deal.ref)}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  @page { size: A4; margin: 14mm 14mm 16mm; }
+  * { box-sizing: border-box; }
+  body { font: 13px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #16233a; margin: 0; padding: 28px 34px; background: #fff; }
+  .hd { display: flex; align-items: center; gap: 14px; border-bottom: 3px solid #d4af37; padding-bottom: 14px; margin-bottom: 18px; }
+  .hd img { width: 46px; height: 46px; border-radius: 10px; }
+  .hd h1 { font: 700 24px/1.15 Georgia, "Times New Roman", serif; margin: 0; color: #0f2744; }
+  .hd .sub { color: #6c6656; font-size: 12.5px; margin-top: 3px; }
+  .hd .right { margin-left: auto; text-align: right; font-size: 12px; color: #6c6656; }
+  .hd .right b { display: block; color: #1d3a99; font-size: 13px; }
+  h2 { font: 700 16px/1.2 Georgia, serif; color: #0f2744; margin: 22px 0 8px; padding-bottom: 4px; border-bottom: 1px solid #ece3d1; break-after: avoid; }
+  .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .f { border: 1px solid #e3e8ef; border-left: 4px solid #1d3a99; border-radius: 8px; padding: 9px 12px; break-inside: avoid; }
+  .f.in { border-left-color: #15803d; } .f.out { border-left-color: #1d3a99; } .f.goods { border-left-color: #3d6394; }
+  .f.due { border-left-color: #b45309; } .f.ok { border-left-color: #15803d; } .f.gold { border-left-color: #d4af37; }
+  .fl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: #6c6656; font-weight: 700; }
+  .fv { font-size: 18px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .fs { font-size: 11.5px; color: #6c6656; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; break-inside: auto; }
+  th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: #6c6656; background: #f4f6fa; padding: 6px 8px; border-bottom: 1px solid #dfe6f0; }
+  td { padding: 6px 8px; border-bottom: 1px solid #eef1f5; vertical-align: top; }
+  .n { text-align: right; font-variant-numeric: tabular-nums; }
+  table.kv td:first-child { color: #6c6656; width: 52%; }
+  th:first-child, td:first-child { text-align: left; }
+  tr { break-inside: avoid; }
+  tr.tot td { border-top: 2px solid #16233a; border-bottom: 0; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .chk { padding: 7px 10px; border-radius: 6px; margin: 5px 0; font-size: 12.5px; break-inside: avoid; }
+  .chk.ok { background: #ecfdf3; } .chk.warn { background: #fff7ed; }
+  .chk b { margin-right: 4px; }
+  .none { color: #6c6656; font-style: italic; margin: 4px 0; }
+  .note { color: #6c6656; font-size: 11.5px; margin: 6px 0 0; }
+  .ft { margin-top: 26px; padding-top: 10px; border-top: 1px solid #ece3d1; font-size: 11px; color: #6c6656; }
+  @media (max-width: 700px) { body { padding: 16px; } .facts { grid-template-columns: 1fr 1fr; } .two { grid-template-columns: 1fr; } }
+  @media print { body { padding: 0; } }
+</style></head><body>
+  <div class="hd">${o.icon ? `<img src="${o.icon}" alt="">` : ''}
+    <div><h1>Deal report — ${esc(deal.ref)}</h1><div class="sub">${esc(deal.title)} · ${esc(deal.customer_name)} · ${esc(deal.supplier_name)}</div></div>
+    <div class="right"><b>${esc(closure)}</b>As at ${stamp}<br>${internal ? 'Internal version' : 'Shareable version'}</div></div>
+  ${summary}
+  <div class="two"><div><h2>Parties and references</h2>${parties}</div><div><h2>Deal value</h2>${tbl(['', ''], valueRows, null, 'ln')}</div></div>
+  <h2>Payments received from the client</h2>${paymentsIn}
+  <h2>Payments sent to the supplier</h2>${paymentsOut}${fwdNote}
+  <h2>Deliveries (proforma value)</h2>${deliveries}
+  ${discounts}
+  <h2>Balances and checks</h2>${checks}
+  <h2>Timeline</h2>${timeline}
+  <h2>Documents on file</h2>${documents}
+  ${voidCount ? `<h2>Voided entries (not counted)</h2>${tbl(['Date', 'Entry', 'Amount', 'Reason'], voidList, null, 'llnl')}` : ''}
+  <div class="ft">Prepared from the records in Europa Deal Control on ${stamp}${o.by ? ` by ${esc(o.by)}` : ''}. All amounts in ${esc(cur)}. Entries awaiting approval are not included.
+    Balances are shown against the invoice after discounts.<br>Europa Pharmaceutical s. r. o. — part of the Boran&amp;Co Group.</div>
+</body></html>`;
+}
+
+async function dealReportModal(id) {
+  let d;
+  try { d = await api('/deals/' + id); } catch (e) { return err(e.message); }
+  const icon64 = await iconDataUrl();
+  const by = State.user && State.user.name;
+  const body = `
+    ${isAdmin() ? `<label class="rep-item" style="margin-bottom:8px"><input type="checkbox" id="fr_int" checked/>
+      <span><b>Include Europa's internal figures</b> — income, margin, supplier discounts, cash held. Untick for a version to share with the client.</span></label>` : ''}
+    <iframe id="fr_frame" class="report-frame" title="Deal report preview"></iframe>`;
+  const close = openModal('Deal report — ' + d.deal.ref, body,
+    `<button class="btn" id="fr_close">Close</button><button class="btn" id="fr_dl">Download</button><button class="btn primary" id="fr_print">Print / Save as PDF</button>`, { xwide: true });
+  const frame = document.getElementById('fr_frame');
+  let html = '';
+  const build = () => {
+    const internal = isAdmin() && document.getElementById('fr_int').checked;
+    html = buildDealReport(d, { internal, icon: icon64, by });
+    frame.srcdoc = html;
+  };
+  const tog = document.getElementById('fr_int');
+  if (tog) tog.onchange = build;
+  document.getElementById('fr_close').onclick = close;
+  document.getElementById('fr_print').onclick = () => {
+    try { frame.contentWindow.focus(); frame.contentWindow.print(); }
+    catch { const w = window.open('', '_blank'); if (w) { w.document.write(html); w.document.close(); w.print(); } }
+  };
+  document.getElementById('fr_dl').onclick = () => {
+    const internal = isAdmin() && document.getElementById('fr_int') && document.getElementById('fr_int').checked;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+    a.download = `${d.deal.ref}-deal-report-${today()}${internal ? '-internal' : ''}.html`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+  build();
+}
+
+/* small line icons (crisp at any size, unlike +/− characters) */
+function icon(name) {
+  const P = {
+    in: '<path d="M12 4v12M6 10l6 6 6-6"/><path d="M5 20h14"/>',
+    out: '<path d="M12 20V8M6 14l6-6 6 6"/><path d="M5 4h14"/>',
+    box: '<path d="M3 8l9-5 9 5v8l-9 5-9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
+    tag: '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
+    doc: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/>',
+    edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/>',
+  };
+  return `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${P[name] || ''}</svg>`;
+}
+
+/* The six facts that matter on every deal, readable at a glance. */
+function keyFacts(d) {
+  const deal = d.deal, c = d.computed, cur = deal.currency;
+  const posted = (arr) => (arr || []).filter((x) => x.status === 'posted');
+  const lastDate = (arr, k) => { const xs = posted(arr).map((x) => x[k] || x.issue_date).filter(Boolean).sort(); return xs.length ? fdate(xs[xs.length - 1]) : null; };
+  const net = c.invoiceNet != null ? c.invoiceNet : Number(deal.invoice_total);
+  const paidOut = c.totalPaidToSupplier || 0;
+  const recvPct = net > 0 ? Math.min(100, (c.totalReceived / net) * 100) : 0;
+  const owedSup = isAdmin() ? (c.supplierOwed || 0) : Number(deal.proforma_total) || 0;
+  const outPct = owedSup > 0 ? Math.min(100, (paidOut / owedSup) * 100) : 0;
+  const lastIn = lastDate(d.customerPayments, 'date'), lastOut = lastDate(d.supplierPayments, 'date'), lastDel = lastDate(d.supplierInvoices, 'delivery_date');
+  const tile = (cls, label, value, sub, pctv, tip) => `
+    <div class="kf ${cls}" ${tip ? `title="${esc(tip)}"` : ''}>
+      <div class="kf-l">${label}</div>
+      <div class="kf-v">${value}</div>
+      ${pctv != null ? `<div class="kf-bar"><span style="width:${pctv}%"></span></div>` : ''}
+      <div class="kf-s">${sub}</div>
+    </div>`;
+  const disc = c.clientDiscount > 0.005 ? ` · after ${money(c.clientDiscount, cur)} discount` : '';
+  return `<div class="kf-grid">
+    ${tile('value', 'Deal value', money(net, cur), (isAdmin() ? `Proforma ${money(c.proformaNet != null ? c.proformaNet : deal.proforma_total, cur)}` : `Order value`) + disc, null)}
+    ${tile('in', 'Received', money(c.totalReceived, cur), lastIn ? `${Math.round(recvPct)}% · last payment ${lastIn}` : 'no payments yet', recvPct)}
+    ${tile(c.customerBalance > 0.005 ? 'due' : 'ok', 'Still due from client', money(c.customerBalance, cur),
+      c.customerOverpayment > 0.005 ? `overpaid — credit of ${money(c.customerOverpayment, cur)}` : c.customerBalance > 0.005 ? `${Math.round(100 - recvPct)}% of the deal outstanding` : 'fully paid', null)}
+    ${tile('out', 'Paid to supplier', money(paidOut, cur),
+      isAdmin() ? (c.supplierOverpaid > 0.005 ? `supplier owes us ${money(c.supplierOverpaid, cur)}` : c.supplierOpenToPay > 0.005 ? `${money(c.supplierOpenToPay, cur)} still to pay` + (lastOut ? ` · last ${lastOut}` : '') : 'fully paid' + (lastOut ? ` · last ${lastOut}` : ''))
+        : (lastOut ? `last payment ${lastOut}` : 'nothing sent yet'), outPct)}
+    ${tile('goods', 'Delivered', money(c.deliveredValue, cur), `${pct(c.deliveryPct)} of proforma` + (lastDel ? ` · last ${lastDel}` : '') + (c.deliveryOutstanding > 0.005 ? ` · ${money(c.deliveryOutstanding, cur)} to go` : ''), Math.min(100, c.deliveryPct || 0))}
+    ${isAdmin()
+      ? tile('income', 'Our income', money(c.incomeKept, cur), `earned of ${money(c.feeTotal, cur)} · held now ${money(c.heldInHouse, cur)}`, c.feeTotal > 0 ? Math.min(100, (c.incomeKept / c.feeTotal) * 100) : 0)
+      : tile('income', '4% fee paid', money(c.feePaid, cur), `of ${money(c.feeTotal, cur)} · ${money(c.feeRemaining, cur)} remaining`, Math.min(100, c.feePct || 0))}
+  </div>`;
+}
+
+/* Money and Goods diagrams in one card, one at a time. */
+function flowsCard(d) {
+  return `<div class="card flows-card">
+    <div class="card-h"><h3>Flows</h3><div style="flex:1"></div>
+      <div class="seg" role="tablist" aria-label="Choose flow">
+        <button type="button" role="tab" data-flowtab="money" class="on" aria-selected="true">Money</button>
+        <button type="button" role="tab" data-flowtab="goods" aria-selected="false">Goods</button>
+      </div></div>
+    <div class="card-b">
+      <div data-flowpane="money">${dealDiagram(d)}</div>
+      <div data-flowpane="goods" class="hidden">${goodsDiagram(d)}</div>
+      <div class="meta center" style="margin-top:6px">Hover or tap any part of the diagram for details</div>
+    </div>
+  </div>`;
+}
+function wireFlowsCard() {
+  document.querySelectorAll('[data-flowtab]').forEach((b) => (b.onclick = () => {
+    document.querySelectorAll('[data-flowtab]').forEach((x) => { const on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-selected', String(on)); });
+    document.querySelectorAll('[data-flowpane]').forEach((p) => p.classList.toggle('hidden', p.dataset.flowpane !== b.dataset.flowtab));
+  }));
 }
 
 /* Upload tile: whole tile is one click to add a file; shows attached files. */
@@ -656,16 +1190,18 @@ function dealDiagram(d) {
   const posted = (arr) => (arr || []).filter((x) => x.status === 'posted');
   const ins = posted(d.customerPayments), outs = posted(d.supplierPayments), dels = posted(d.supplierInvoices);
   const paidOut = outs.reduce((a, p) => a + Number(p.amount || 0), 0);
-  const invoice = Number(deal.invoice_total) || 0;
-  const proforma = Number(deal.proforma_total) || 0;
+  const invoice = c.invoiceNet != null ? c.invoiceNet : Number(deal.invoice_total) || 0;   // after client discounts
+  const proformaGross = Number(deal.proforma_total) || 0;                                    // the goods pool
+  const proforma = admin && c.proformaNet != null ? c.proformaNet : proformaGross;            // what we owe (after supplier discounts)
   const fee = c.feeTotal || 0;
+  const cDisc = c.clientDiscount || 0, sDisc = admin ? (c.supplierDiscount || 0) : 0;
   const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
   const listTip = (rows, fmt) => rows.slice(-5).map(fmt).join('\n') + (rows.length > 5 ? `\n… and ${rows.length - 5} earlier` : '');
 
   const F = {
     moneyPct: invoice > 0 ? Math.min(100, (c.totalReceived / invoice) * 100) : 0,
     goodsPct: Math.min(100, c.deliveryPct || 0),
-    invoice, proforma, fee, paidOut, m,
+    invoice, proforma: proformaGross, fee, paidOut, m,
     delivered: c.deliveredValue || 0, remaining: c.deliveryOutstanding || 0, dels,
     inCount: plural(ins.length, 'payment'), outCount: plural(outs.length, 'payment'),
     delCount: plural(dels.length, 'delivery').replace('deliverys', 'deliveries'),
@@ -681,13 +1217,13 @@ function dealDiagram(d) {
       : `No deliveries yet. The supplier ships in batches as goods are produced.`,
     tipMoneyPool: `Deal pool = our invoice ${m(invoice)}` + (admin ? `\n= supplier proforma ${m(proforma)} + our income ${m(fee)}` : `\n(includes the agreed 4% fee of ${m(fee)})`) +
       `\nPaid in so far ${m(c.totalReceived)} · still to pay ${m(c.customerBalance)}`,
-    tipGoodsPool: `Proforma pool ${m(proforma)} — the goods the supplier committed to deliver.\nDelivered ${m(c.deliveredValue)} · still to deliver ${m(c.deliveryOutstanding)}.\nDeliveries never change any payment.`,
+    tipGoodsPool: `Proforma pool ${m(proformaGross)} — the goods the supplier committed to deliver.\nDelivered ${m(c.deliveredValue)} · still to deliver ${m(c.deliveryOutstanding)}.\nDeliveries never change any payment.`,
   };
 
   const nodes = {
     client: {
       role: 'Client · pays us', name: deal.customer_name, icon: '🏢', accent: 'green',
-      tip: `${deal.customer_name}\nInvoiced ${m(invoice)} (supplier proforma + our 4%).\nPaid so far ${m(c.totalReceived)} in ${F.inCount}.\nStill to pay ${m(c.customerBalance)}.`,
+      tip: `${deal.customer_name}\nInvoiced ${m(invoice)}${cDisc > 0.005 ? ` (after a discount of ${m(cDisc)})` : ' (supplier proforma + our 4%)'}.\nPaid so far ${m(c.totalReceived)} in ${F.inCount}.\nStill to pay ${m(c.customerBalance)}.`,
       lines: [['Invoiced', m(invoice), ''], ['Paid', m(c.totalReceived), 'green'],
         ['Still to pay', m(c.customerBalance), c.customerBalance > 0.005 ? 'amber' : 'green']],
     },
@@ -704,7 +1240,7 @@ function dealDiagram(d) {
     },
     supplier: {
       role: 'Supplier · paid by us', name: deal.supplier_name, icon: '🏭', accent: 'navy',
-      tip: `${deal.supplier_name}\nProforma ${m(proforma)} sets the deal.\nPaid so far ${m(paidOut)} in ${F.outCount}.\nDelivered ${m(c.deliveredValue)} of the proforma in ${F.delCount}.`,
+      tip: `${deal.supplier_name}\nProforma ${m(proforma)}${sDisc > 0.005 ? ` after a ${m(sDisc)} discount` : ''} sets the deal.\nPaid so far ${m(paidOut)} in ${F.outCount}.\nDelivered ${m(c.deliveredValue)} of the proforma in ${F.delCount}.`,
       lines: admin
         ? [['Proforma', m(proforma), ''], ['Paid', m(paidOut), 'navy'],
           ['Open to pay', m(c.supplierOpenToPay), c.supplierOpenToPay > 0.005 ? 'amber' : 'green']]
@@ -715,11 +1251,18 @@ function dealDiagram(d) {
   // How the deal is built — the proforma is the starting point.
   const build = admin
     ? `<div class="dg-build">
-        <span class="bchip" data-dtip="${esc('The supplier proforma sets the scope of the deal: ' + m(proforma) + '.')}">Supplier proforma <b>${m(proforma)}</b></span>
+        <span class="bchip" data-dtip="${esc('The supplier proforma sets the scope of the deal: ' + m(proforma) + (sDisc > 0.005 ? ` (${m(proformaGross)} less a ${m(sDisc)} supplier discount).` : '.'))}">Supplier proforma <b>${m(proforma)}</b>${sDisc > 0.005 ? `<small>${m(proformaGross)} − ${m(sDisc)} discount</small>` : ''}</span>
         <span class="bop">+</span>
         <span class="bchip gold" data-dtip="${esc('Our markup on top of the proforma (' + (c.marginPct || 0) + '%). This is our income on the deal.')}">Our income <b>${m(fee)}</b></span>
         <span class="bop">=</span>
-        <span class="bchip navy" data-dtip="${esc('What we invoice the client: the proforma plus our income.')}">Invoice to client <b>${m(invoice)}</b></span>
+        <span class="bchip navy" data-dtip="${esc('What we invoice the client: the proforma plus our income' + (cDisc > 0.005 ? `, after a ${m(cDisc)} discount to the client.` : '.'))}">Invoice to client <b>${m(invoice)}</b>${cDisc > 0.005 ? `<small>${m(Number(deal.invoice_total))} − ${m(cDisc)} discount</small>` : ''}</span>
+      </div>`
+    : cDisc > 0.005 ? `<div class="dg-build">
+        <span class="bchip" data-dtip="${esc('Europa invoice before discount.')}">Invoice <b>${m(Number(deal.invoice_total))}</b></span>
+        <span class="bop">−</span>
+        <span class="bchip gold" data-dtip="${esc('Discount applied to your invoice.')}">Discount <b>${m(cDisc)}</b></span>
+        <span class="bop">=</span>
+        <span class="bchip navy" data-dtip="${esc('Your invoice after the discount. It includes the agreed 4% fee of ' + m(fee) + '.')}">Order value <b>${m(invoice)}</b><small>incl. 4% fee ${m(fee)}</small></span>
       </div>`
     : `<div class="dg-build">
         <span class="bchip navy" data-dtip="${esc('Your order value, as invoiced by Europa.')}">Order value <b>${m(invoice)}</b></span>
@@ -943,17 +1486,20 @@ function goodsDiagram(d) {
   const dels = posted(d.supplierInvoices).slice().sort((a, b) => String(a.delivery_date || a.issue_date || '').localeCompare(String(b.delivery_date || b.issue_date || '')) || a.id - b.id);
   const paidOut = posted(d.supplierPayments).reduce((a, p) => a + Number(p.amount || 0), 0);
   const proforma = Number(deal.proforma_total) || 0;
-  const invoice = Number(deal.invoice_total) || 0;
-  const delivered = c.deliveredValue || 0;
-  const deliveredClient = c.deliveredClient || 0;
+  const invoice = c.invoiceNet != null ? c.invoiceNet : Number(deal.invoice_total) || 0;
+  const delivered = c.deliveredValue || 0;                                   // goods, at proforma value
+  // Payments are compared with goods at their discounted (net) value on each side.
+  const deliveredSup = c.deliveredSupplierNet != null ? c.deliveredSupplierNet : delivered;
+  const deliveredClient = c.deliveredClientNet != null ? c.deliveredClientNet : (c.deliveredClient || 0);
+  const netNote = (c.supplierDiscount || 0) > 0.005 ? ' (net of the supplier discount)' : '';
 
-  // Supplier check: delivered (proforma value) vs paid to the supplier.
-  const supGap = Math.round((delivered - paidOut) * 100) / 100;
+  // Supplier check: delivered (net value) vs paid to the supplier. Shown to Europa only.
+  const supGap = Math.round((deliveredSup - paidOut) * 100) / 100;
   const sup = supGap > 0.005
-    ? { cls: 'amber', text: `Delivered, not yet paid ${m(supGap)}`, tip: `Goods worth ${m(delivered)} have been delivered, but only ${m(paidOut)} has been paid to the supplier.\n${m(supGap)} of delivered goods is still unpaid — a payment to the supplier is due.` }
+    ? { cls: 'amber', text: `Delivered, not yet paid ${m(supGap)}`, tip: `Goods worth ${m(deliveredSup)}${netNote} have been delivered, but only ${m(paidOut)} has been paid to the supplier.\n${m(supGap)} of delivered goods is still unpaid — a payment to the supplier is due.` }
     : supGap < -0.005
-      ? { cls: 'blue', text: `Paid ahead, awaiting goods ${m(-supGap)}`, tip: `${m(paidOut)} has been paid to the supplier, but goods worth only ${m(delivered)} have been delivered.\n${m(-supGap)} is paid in advance and waiting to be delivered.` }
-      : { cls: 'green', text: 'Delivered and paid are in balance', tip: `Delivered ${m(delivered)} · paid to supplier ${m(paidOut)}.` };
+      ? { cls: 'blue', text: `Paid ahead, awaiting goods ${m(-supGap)}`, tip: `${m(paidOut)} has been paid to the supplier, but goods worth only ${m(deliveredSup)}${netNote} have been delivered.\n${m(-supGap)} is paid in advance and waiting to be delivered.` }
+      : { cls: 'green', text: 'Delivered and paid are in balance', tip: `Delivered ${m(deliveredSup)}${netNote} · paid to supplier ${m(paidOut)}.` };
   // Client check: goods received (at invoice value) vs paid by the client.
   const cliGap = Math.round((deliveredClient - c.totalReceived) * 100) / 100;
   const cli = cliGap > 0.005
@@ -963,7 +1509,8 @@ function goodsDiagram(d) {
       : { cls: 'green', text: 'Client payments match deliveries', tip: `Goods delivered ${m(deliveredClient)} at invoice prices · paid ${m(c.totalReceived)}.` };
 
   const G = {
-    m, cur, dels, proforma, invoice, delivered, deliveredClient, paidOut, received: c.totalReceived,
+    m, cur, dels, proforma, invoice, delivered, deliveredSup, deliveredClient, paidOut, received: c.totalReceived,
+    showSup: isAdmin(),
     remaining: c.deliveryOutstanding || 0, pct: Math.min(100, c.deliveryPct || 0), sup, cli,
     tipGoodsPool: `Proforma pool ${m(proforma)} — what the supplier committed to deliver.\nDelivered ${m(delivered)} · still to deliver ${m(c.deliveryOutstanding)}.`,
     supNode: {
@@ -1042,7 +1589,7 @@ function gdSvgWide(G) {
   const id = 'gdw';
   const x0 = 290, x1 = 710, ty = 158;
   const mk = gdMarkers(G, (i, n) => [n === 1 ? (x0 + x1) / 2 : x0 + 30 + (i * (x1 - x0 - 60)) / (n - 1), ty], false);
-  return `<svg class="dg-svg dg-wide" viewBox="0 0 1000 420" role="img" aria-label="Goods flow diagram">
+  return `<svg class="dg-svg dg-wide" viewBox="0 0 1000 ${G.showSup ? 420 : 350}" role="img" aria-label="Goods flow diagram">
     ${dgDefs(id)}
     <text x="20" y="22" class="dg-lane goods">GOODS FLOW · no effect on money</text>
     <text x="980" y="22" text-anchor="end" class="dg-lane-r">Proforma pool ${esc(G.m(G.proforma))} · ${Math.round(G.pct)}% delivered</text>
@@ -1057,15 +1604,15 @@ function gdSvgWide(G) {
       ${mk.hidden ? `<text x="${x0 + 4}" y="${ty + 48}" class="dg-fsub">+${mk.hidden} earlier</text>` : ''}
     </g>
     ${mk.out}
-    ${gdCheck(20, 296, 960, `SUPPLIER · delivered ${G.m(G.delivered)} vs paid ${G.m(G.paidOut)}`, Math.max(G.proforma, G.delivered, G.paidOut), G.delivered, 'navy', G.paidOut, 'gold', G.sup, false)}
-    ${gdCheck(20, 368, 960, `CLIENT · goods received ${G.m(G.deliveredClient)} vs paid ${G.m(G.received)}`, Math.max(G.invoice, G.deliveredClient, G.received), G.deliveredClient, 'navy', G.received, 'money', G.cli, false)}
+    ${G.showSup ? gdCheck(20, 296, 960, `SUPPLIER · delivered ${G.m(G.deliveredSup)} vs paid ${G.m(G.paidOut)}`, Math.max(G.deliveredSup, G.paidOut, 1) * 1.08, G.deliveredSup, 'navy', G.paidOut, 'gold', G.sup, false) : ''}
+    ${gdCheck(20, G.showSup ? 368 : 296, 960, `CLIENT · goods received ${G.m(G.deliveredClient)} vs paid ${G.m(G.received)}`, Math.max(G.invoice, G.deliveredClient, G.received), G.deliveredClient, 'navy', G.received, 'money', G.cli, false)}
   </svg>`;
 }
 function gdSvgTall(G) {
   const id = 'gdt';
   const tx = 60, y0 = 270, y1 = 470;
   const mk = gdMarkers(G, (i, n) => [tx, n === 1 ? (y0 + y1) / 2 : y0 + 18 + (i * (y1 - y0 - 36)) / (n - 1)], true);
-  return `<svg class="dg-svg dg-tall" viewBox="0 0 400 860" role="img" aria-label="Goods flow diagram">
+  return `<svg class="dg-svg dg-tall" viewBox="0 0 400 ${G.showSup ? 860 : 770}" role="img" aria-label="Goods flow diagram">
     ${dgDefs(id)}
     <text x="20" y="22" class="dg-lane goods">GOODS FLOW · no effect on money</text>
     <text x="20" y="42" class="dg-lane-r">Proforma pool ${esc(G.m(G.proforma))} · ${Math.round(G.pct)}% delivered</text>
@@ -1079,8 +1626,8 @@ function gdSvgTall(G) {
     </g>
     ${mk.out}
     ${dgNode(G.cliNode, 20, 480, 360, 176)}
-    ${gdCheck(20, 692, 360, 'SUPPLIER · delivered vs paid', Math.max(G.proforma, G.delivered, G.paidOut), G.delivered, 'navy', G.paidOut, 'gold', G.sup, true)}
-    ${gdCheck(20, 784, 360, 'CLIENT · received vs paid', Math.max(G.invoice, G.deliveredClient, G.received), G.deliveredClient, 'navy', G.received, 'money', G.cli, true)}
+    ${G.showSup ? gdCheck(20, 692, 360, 'SUPPLIER · delivered vs paid', Math.max(G.deliveredSup, G.paidOut, 1) * 1.08, G.deliveredSup, 'navy', G.paidOut, 'gold', G.sup, true) : ''}
+    ${gdCheck(20, G.showSup ? 784 : 692, 360, 'CLIENT · received vs paid', Math.max(G.invoice, G.deliveredClient, G.received), G.deliveredClient, 'navy', G.received, 'money', G.cli, true)}
   </svg>`;
 }
 
@@ -1094,9 +1641,9 @@ function paymentsCard(d, cur, ro) {
   const inRows = ins.length ? ins.map((p) => `
     <div class="pay-row in">
       <div class="pay-when">${fdate(p.date)}${p.status === 'pending' ? ' <span class="pill amber">pending</span>' : ''}</div>
-      <div class="pay-what">Received from ${esc(d.deal.customer_name)}${p.bank_ref ? ` <span class="meta">· ${esc(p.bank_ref)}</span>` : ''}
-        ${p.kept !== undefined ? `<div class="meta">includes ${money(p.kept, cur)} of the 4% fee</div>` : ''}</div>
-      <div class="pay-amt green">+ ${money(p.amount_received, cur)}</div>
+      <div class="pay-what">${p.bank_ref ? esc(p.bank_ref) : '<span class="meta">no reference</span>'}
+        ${p.kept !== undefined ? `<div class="meta">${isAdmin() ? 'our income' : '4% fee'} ${money(p.kept, cur)}</div>` : ''}</div>
+      <div class="pay-amt green">${money(p.amount_received, cur)}</div>
       <div class="pay-act">
         ${docFor(d, 'customer_payment', p.id) ? `<span class="pill green">proof</span>` : `<span class="pill gray">no proof</span>`}
         ${isAdmin() && !ro ? `<button class="btn sm" data-upload='${uploadAttr('customer_payment', p.id)}'>Proof</button>
@@ -1107,8 +1654,8 @@ function paymentsCard(d, cur, ro) {
   const outRows = outs.length ? outs.map((p) => `
     <div class="pay-row out">
       <div class="pay-when">${fdate(p.date)}${p.status === 'pending' ? ' <span class="pill amber">pending</span>' : ''}</div>
-      <div class="pay-what">Paid to ${esc(d.deal.supplier_name)}${p.bank_ref ? ` <span class="meta">· ${esc(p.bank_ref)}</span>` : ''}</div>
-      <div class="pay-amt blue">− ${money(p.amount, cur)}</div>
+      <div class="pay-what">${p.bank_ref ? esc(p.bank_ref) : '<span class="meta">no reference</span>'}</div>
+      <div class="pay-amt blue">${money(p.amount, cur)}</div>
       <div class="pay-act">
         ${docFor(d, 'supplier_payment', p.id) ? `<span class="pill green">proof</span>` : `<span class="pill gray">no proof</span>`}
         ${isAdmin() && !ro ? `<button class="btn sm" data-upload='${uploadAttr('supplier_payment', p.id)}'>Proof</button>
@@ -1139,7 +1686,7 @@ function paymentsCard(d, cur, ro) {
       ${sectionCustomerJourneyRows(d, cur)}
     `)}`;
   const actions = isAdmin() && !ro
-    ? `<button class="btn sm primary" data-next="add-cust-pay">＋ Money in</button> <button class="btn sm" data-next="add-supp-pay">＋ Money out</button>`
+    ? `<button class="btn sm primary" data-next="add-cust-pay">${icon('in')} Payment in</button> <button class="btn sm" data-next="add-supp-pay">${icon('out')} Payment out</button>`
     : '';
   return card('Payments', body, actions);
 }
@@ -1170,7 +1717,7 @@ function deliveryCard(d, cur) {
     </div>
     <div class="progress goods ${c.overDelivery > 0 ? 'over' : ''}" style="height:10px;margin:10px 0 14px"><span style="width:${pctW}%"></span></div>
     ${deliveriesTable(d, cur)}`;
-  const addBtn = !ro && canWrite() ? `<button class="btn sm primary" data-next="add-supp-inv">＋ Add a delivery</button>` : '';
+  const addBtn = !ro && canWrite() ? `<button class="btn sm primary" data-next="add-supp-inv">${icon('box')} Add delivery</button>` : '';
   return card('Goods flow — deliveries (no effect on money)', body, addBtn);
 }
 
@@ -1207,7 +1754,7 @@ function sectionCloseout(c, cur, deal) {
 }
 
 /* ---- Documents ---- */
-const DOC_GROUPS = ['Customer invoices', 'Supplier proformas', 'Supplier commercial invoices', 'Customer payment confirmations', 'Supplier payment confirmations', 'Delivery notes', 'Shipping documents', 'Manufacturer balance letters', 'Other documents'];
+const DOC_GROUPS = ['Customer invoices', 'Supplier proformas', 'Supplier commercial invoices', 'Customer payment confirmations', 'Supplier payment confirmations', 'Delivery notes', 'Shipping documents', 'Manufacturer balance letters', 'Supplier discount documents', 'Client discount documents', 'Other documents'];
 function sectionDocuments(d, cur) {
   const byCat = {}; DOC_GROUPS.forEach((g) => (byCat[g] = []));
   d.documents.forEach((doc) => { (byCat[doc.category] || (byCat['Other documents'])).push(doc); });
@@ -1583,13 +2130,13 @@ function completeDeal(deal) {
   const c = d.computed, cur = deal.currency;
   const posted = (arr) => (arr || []).filter((x) => x.status === 'posted');
   const paidOut = posted(d.supplierPayments).reduce((a, p) => a + Number(p.amount || 0), 0);
-  const delivered = c.deliveredValue || 0;
+  const delivered = c.deliveredSupplierNet != null ? c.deliveredSupplierNet : (c.deliveredValue || 0);
   const mBal = Math.round((paidOut - delivered) * 100) / 100;
   const others = (State._dealList || []).filter((x) => x.id !== deal.id && x.status === 'active');
   const body = `
     <div class="rowset" style="margin-bottom:14px">
       ${row('Paid to the manufacturer', money(paidOut, cur))}
-      ${row('Goods delivered (proforma value)', money(delivered, cur))}
+      ${row((c.supplierDiscount || 0) > 0.005 ? 'Goods delivered (net of supplier discount)' : 'Goods delivered (proforma value)', money(delivered, cur))}
       ${row(mBal >= 0 ? 'Held by the manufacturer' : 'Delivered but not paid', money(Math.abs(mBal), cur), Math.abs(mBal) > 0.005 ? 'amber' : 'green')}
       ${row('Client still to pay', money(c.customerBalance, cur), c.customerBalance > 0.005 ? 'amber' : 'green')}
     </div>
@@ -1672,7 +2219,7 @@ function letterText(d, option, lang, target) {
   const deal = d.deal, cur = deal.currency, c = d.computed;
   const posted = (arr) => (arr || []).filter((x) => x.status === 'posted');
   const paidOut = posted(d.supplierPayments).reduce((a, p) => a + Number(p.amount || 0), 0);
-  const delivered = c.deliveredValue || 0;
+  const delivered = c.deliveredSupplierNet != null ? c.deliveredSupplierNet : (c.deliveredValue || 0);
   const bal = Number(deal.closure_balance) || Math.max(0, paidOut - delivered);
   const dels = posted(d.supplierInvoices).length;
   const today = new Date().toISOString().slice(0, 10);
@@ -2009,6 +2556,10 @@ function wireCardEdits() {
     b.onclick = (e) => { e.stopPropagation(); dealDetailsModal(Number(b.dataset.editdeal)); };
     b.onkeydown = (e) => e.stopPropagation();
   });
+  document.querySelectorAll('[data-cardreport]').forEach((b) => {
+    b.onclick = (e) => { e.stopPropagation(); dealReportModal(Number(b.dataset.cardreport)); };
+    b.onkeydown = (e) => e.stopPropagation();
+  });
 }
 /* Deals are listed in the order they were added (1 → 7), or reversed. */
 function getSortDir() { try { return localStorage.getItem('ep-sort') === 'desc' ? 'desc' : 'asc'; } catch { return 'asc'; } }
@@ -2102,7 +2653,8 @@ async function renderOverview() {
     <div class="ovcard" data-flow="${d.id}" tabindex="0" role="button" aria-label="Open flows for ${esc(d.ref)}">
       <div class="dcard-top"><span class="dcard-ref">${esc(d.ref)}</span>
         <span class="dcard-top-r"><span class="pill ${d.status === 'active' ? 'blue' : 'green'}">${esc(d.status)}</span>
-        ${isAdmin() ? `<button class="card-edit" type="button" data-editdeal="${d.id}" aria-label="Edit details of ${esc(d.ref)}" title="Edit name, parties and invoice numbers">✎</button>` : ''}</span></div>
+        <button class="card-edit" type="button" data-cardreport="${d.id}" aria-label="Full report for ${esc(d.ref)}" title="Full deal report">${icon('doc')}</button>
+        ${isAdmin() ? `<button class="card-edit" type="button" data-editdeal="${d.id}" aria-label="Edit details of ${esc(d.ref)}" title="Edit name, parties and invoice numbers">${icon('edit')}</button>` : ''}</span></div>
       <div class="dcard-title">${esc(d.title)}</div>
       ${invoiceNumbers(d)}
       ${miniDiagram(d)}
@@ -2171,13 +2723,13 @@ async function renderFlow() {
     ...posted(d.supplierInvoices).map((x) => ({ date: x.delivery_date || x.issue_date, kind: 'goods', text: `Delivery ${x.invoice_number}`, amt: Number(x.proforma_allocated) || 0 })),
   ].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
   const last = (kind) => { const e = events.filter((x) => x.kind === kind); return e.length ? fdate(e[e.length - 1].date) : '—'; };
-  const sign = { in: '+', out: '−', goods: '' };
   const label = { in: 'Money in', out: 'Money out', goods: 'Goods' };
 
   const actions = `
     <button class="btn" id="fl-back">← Overview</button>
     <button class="btn" id="fl-open">Open full deal</button>
-    ${isAdmin() ? `<button class="btn primary" id="fl-report">Partner report</button>` : ''}`;
+    <button class="btn primary" id="fl-full">${icon('doc')} Full report</button>
+    ${isAdmin() ? `<button class="btn" id="fl-report">Partner report</button>` : ''}`;
   shell(deal.ref, `
     <div class="deal-head"><h2>${esc(deal.title)}</h2>
       <span class="pill ${deal.status === 'active' ? 'blue' : deal.status === 'completed' ? 'green' : 'gray'}">${esc(deal.status)}</span></div>
@@ -2199,11 +2751,12 @@ async function renderFlow() {
         <div class="tl-date">${fdate(e.date)}</div>
         <div class="tl-dot"></div>
         <div class="tl-text"><span class="tl-kind">${label[e.kind]}</span> ${esc(e.text)}</div>
-        <div class="tl-amt">${sign[e.kind]} ${money(e.amt, cur)}</div>
+        <div class="tl-amt">${money(e.amt, cur)}</div>
       </div>`).join('')}</div>` : '<div class="empty small">Nothing has happened on this deal yet.</div>')}
   `, actions);
   document.getElementById('fl-back').onclick = () => go('overview');
   document.getElementById('fl-open').onclick = () => go('deal', { id: deal.id });
+  document.getElementById('fl-full').onclick = () => dealReportModal(deal.id);
   const rb = document.getElementById('fl-report');
   if (rb) rb.onclick = () => partnerReportModal([{ id: deal.id, ref: deal.ref, title: deal.title, customer_name: deal.customer_name }], [deal.id]);
   wireDiagram();
@@ -2267,7 +2820,9 @@ function partnerReportSection(n, d, opts) {
 
   L.push(`${n} Сделка${opts.showRef ? ` (${deal.ref}${deal.invoice_number ? `, инвойс № ${deal.invoice_number}` : ''})` : ''}`);
   L.push('');
-  L.push(`Инвойс со стороны Europa Pharmaceuticals вам был выслан на ${ruNum(deal.invoice_total)} €. ` +
+  const cDisc = c.clientDiscount || 0;
+  L.push(`Инвойс со стороны Europa Pharmaceuticals вам был выслан на ${ruNum(deal.invoice_total)} €` +
+    (cDisc > 0.005 ? `, с учетом скидки ${ruNum(cDisc)} € — ${ruNum(c.invoiceNet)} €. ` : '. ') +
     (latvia ? `Латыши нам высылали на ${ruNum(deal.proforma_total)} €.` : `Поставщик (${label}) выслал нам инвойс на ${ruNum(deal.proforma_total)} €.`));
   L.push('');
   if (!dels.length) L.push('Поставок пока не было.');
@@ -2281,6 +2836,11 @@ function partnerReportSection(n, d, opts) {
   else if (c.overDelivery > 0.005) L.push(`Поставлено сверх проформы на ${ruNum(c.overDelivery)} €.`);
   else L.push('Все товары по проформе поставлены.');
   if (opts.askClose) L.push('Прошу подтвердить, закрыта ли сделка. На основании этого нам нужно написать письма насчет открытых балансов.');
+  const discs = (d.discounts || []).filter((x) => x.status === 'posted' && Number(x.client_amount) > 0);
+  if (discs.length) {
+    L.push('');
+    discs.forEach((x) => L.push(`Вам была предоставлена скидка ${ruNum(x.client_amount)} € (${ruDate(x.date)}${x.client_ref ? `, кредит-нота № ${x.client_ref}` : ''}).`));
+  }
   L.push('');
   L.push('С финансовой точки зрения:');
   const { fwd, unlinked } = forwardingByPayment(cps, sps);
@@ -2299,8 +2859,9 @@ function partnerReportSection(n, d, opts) {
   if (unlinked > 0.005) { L.push(''); L.push(`Кроме того, ${to} было выслано ${ruNum(unlinked)} € до получения оплаты с вашей стороны.`); }
 
   const paidOut = sps.reduce((a, p) => a + Number(p.amount || 0), 0);
-  const weOwe = Math.max(0, Number(deal.proforma_total) - paidOut);
-  const weOver = Math.max(0, paidOut - Number(deal.proforma_total));
+  const supNet = c.proformaNet != null ? c.proformaNet : Number(deal.proforma_total);
+  const weOwe = Math.max(0, supNet - paidOut);
+  const weOver = Math.max(0, paidOut - supNet);
   const theyOwe = c.customerBalance || 0;
   const theyOver = c.customerOverpayment || 0;
   if (weOwe > 0.005 || theyOwe > 0.005 || weOver > 0.005 || theyOver > 0.005) {
@@ -2463,22 +3024,23 @@ function render() {
 
 /* ================= BOOT ================= */
 /* ================= ZOOM =================
-   Scales the main screen only (the sidebar keeps its size). Remembered per device.
-   Default is 90%, a little smaller than the browser's normal size. */
+   Scales the page content (sidebar and top bar keep their size). Remembered per device. */
 const ZOOM_STEPS = [0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 1, 1.1, 1.25];
-const ZOOM_DEFAULT = 0.9;
+const ZOOM_DEFAULT = 1;   // the base design is now compact; 100% is the comfortable size
 function getZoom() {
-  try { const z = parseFloat(localStorage.getItem('ep-zoom-main')); if (ZOOM_STEPS.includes(z)) return z; } catch {}
+  try { const z = parseFloat(localStorage.getItem('ep-zoom-content')); if (ZOOM_STEPS.includes(z)) return z; } catch {}
   return ZOOM_DEFAULT;
 }
 function applyZoom(z) {
-  const main = document.querySelector('.main');
-  if (main) main.style.zoom = z === 1 ? '' : String(z);
+  // Scale the page content only: the top bar (with these buttons) and the sidebar
+  // stay still, so the − / + buttons do not move under the pointer.
+  const content = document.getElementById('content');
+  if (content) content.style.zoom = z === 1 ? '' : String(z);
   const lbl = document.getElementById('zm-reset');
   if (lbl) lbl.textContent = Math.round(z * 100) + '%';
 }
 function setZoom(z) {
-  try { localStorage.setItem('ep-zoom-main', String(z)); } catch {}
+  try { localStorage.setItem('ep-zoom-content', String(z)); } catch {}
   applyZoom(z);
 }
 function stepZoom(dir) {

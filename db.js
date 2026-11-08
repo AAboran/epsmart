@@ -148,6 +148,21 @@ CREATE TABLE IF NOT EXISTS approvals (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS discounts (
+  id SERIAL PRIMARY KEY,
+  deal_id INTEGER NOT NULL REFERENCES deals(id),
+  date TEXT NOT NULL,
+  supplier_amount NUMERIC NOT NULL DEFAULT 0,
+  client_amount NUMERIC NOT NULL DEFAULT 0,
+  supplier_ref TEXT,
+  client_ref TEXT,
+  notes TEXT,
+  status TEXT NOT NULL DEFAULT 'posted' CHECK (status IN ('pending','posted','void')),
+  void_reason TEXT,
+  created_by INTEGER,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS notifications (
   id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id),

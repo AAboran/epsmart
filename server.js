@@ -50,17 +50,18 @@ async function getDeal(id) {
   return (await query('SELECT * FROM deals WHERE id=$1', [id])).rows[0];
 }
 async function dealEntries(id) {
-  const [cp, si, sp, docs] = await Promise.all([
+  const [cp, si, sp, docs, dc] = await Promise.all([
     query('SELECT * FROM customer_payments WHERE deal_id=$1 ORDER BY date, id', [id]),
     query('SELECT * FROM supplier_invoices WHERE deal_id=$1 ORDER BY issue_date, id', [id]),
     query('SELECT * FROM supplier_payments WHERE deal_id=$1 ORDER BY date, id', [id]),
     query('SELECT id,deal_id,category,original_name,mime,size,link_type,link_id,status,uploaded_by,created_at FROM documents WHERE deal_id=$1 ORDER BY created_at DESC', [id]),
+    query('SELECT * FROM discounts WHERE deal_id=$1 ORDER BY date, id', [id]),
   ]);
-  return { customerPayments: cp.rows, supplierInvoices: si.rows, supplierPayments: sp.rows, documents: docs.rows };
+  return { customerPayments: cp.rows, supplierInvoices: si.rows, supplierPayments: sp.rows, documents: docs.rows, discounts: dc.rows };
 }
 async function computeFor(deal) {
   const e = await dealEntries(deal.id);
-  const c = finance.computeDeal(deal, e.customerPayments, e.supplierInvoices, e.supplierPayments);
+  const c = finance.computeDeal(deal, e.customerPayments, e.supplierInvoices, e.supplierPayments, e.discounts);
   const action = finance.nextAction(deal, c);
   return { entries: e, computed: c, nextAction: action };
 }
@@ -80,12 +81,29 @@ const PRIVATE_FIELDS = [
   'supplierOwed', 'supplierOpenToPay', 'supplierOverpaid', 'markupRatio',
   // legacy alias names that carry the same private values
   'supplierFundingShortfall', 'companyMoneyUsed', 'supplierInvoicesOpen', 'supplierOverpayment',
+  // discounts: what the supplier gave us, and how much of it we kept
+  'supplierDiscount', 'discountKept', 'proformaNet', 'deliveredSupplierNet', 'originalMargin',
+  // our real income (the client sees her own fee view instead, below)
+  'dealMargin', 'incomeKept', 'incomeExpectedTotal', 'incomeRemaining', 'marginPct', 'rate', 'commissionRate',
 ];
+const SUPPLIER_DISCOUNT_DOCS = 'Supplier discount documents';
 function scrubComputed(c, user) {
   if (!c || user.role === 'admin') return c;
   const out = { ...c };
+  // the client's "4% fee" is the fee inside her own invoice
+  out.feeTotal = c.clientFeeTotal; out.feePaid = c.clientFeePaid;
+  out.feeRemaining = c.clientFeeRemaining; out.feePct = c.clientFeePct;
   PRIVATE_FIELDS.forEach((f) => { delete out[f]; });
   return out;
+}
+function scrubDiscounts(rows, user) {
+  if (user.role === 'admin') return rows;
+  return (rows || []).filter((x) => Number(x.client_amount) > 0)
+    .map((x) => { const o = { ...x }; delete o.supplier_amount; delete o.supplier_ref; delete o.notes; return o; });
+}
+function scrubDocuments(rows, user) {
+  if (user.role === 'admin') return rows;
+  return (rows || []).filter((x) => x.category !== SUPPLIER_DISCOUNT_DOCS);
 }
 function scrubPayments(rows, user) {
   if (user.role === 'admin') return rows;
@@ -203,9 +221,10 @@ app.get('/api/deals', requireAuth, wrap(async (req, res) => {
     totalCustomerBalance: sum((c) => c.customerBalance),
     totalSupplierOpen: sum((c) => c.supplierInvoicesOpen),
     totalUnderpaidToDate: sum((c) => c.clientUnderpaidToDate),
-    totalFee: sum((c) => c.feeTotal),
-    totalFeePaid: sum((c) => c.feePaid),
-    totalFeeRemaining: sum((c) => c.feeRemaining),
+    totalFee: sum((c) => (req.user.role === 'admin' ? c.feeTotal : c.clientFeeTotal)),
+    totalFeePaid: sum((c) => (req.user.role === 'admin' ? c.feePaid : c.clientFeePaid)),
+    totalFeeRemaining: sum((c) => (req.user.role === 'admin' ? c.feeRemaining : c.clientFeeRemaining)),
+    totalInvoicedNet: sum((c) => c.invoiceNet),
   };
   if (req.user.role === 'admin') {
     portfolio.totalIncomeKept = sum((c) => c.incomeKept);
@@ -221,9 +240,20 @@ app.get('/api/deals/:id', requireAuth, wrap(async (req, res) => {
   const { entries, computed, nextAction } = await computeFor(d);
   const pend = (await query("SELECT * FROM approvals WHERE deal_id=$1 AND status='pending' ORDER BY created_at DESC", [d.id])).rows;
   for (const a of pend) a.requested_by_name = await userName(a.requested_by);
+  // each payment's share of our income / of the client's fee, at today's figures
+  const shareRatio = req.user.role === 'admin'
+    ? (computed.rate || 0)
+    : (computed.invoiceNet > 0 ? computed.clientFeeTotal / computed.invoiceNet : 0);
+  const payments = entries.customerPayments.map((p) => {
+    const applied = Number(p.amount_applied) || 0;
+    const kept = finance.round2(applied * shareRatio);
+    return { ...p, kept, reserved: finance.round2(applied - kept) };
+  });
   res.json({
     deal: scrubDeal(d, req.user), ...entries,
-    customerPayments: scrubPayments(entries.customerPayments, req.user),
+    customerPayments: scrubPayments(payments, req.user),
+    discounts: scrubDiscounts(entries.discounts, req.user),
+    documents: scrubDocuments(entries.documents, req.user),
     computed: scrubComputed(computed, req.user), nextAction, pendingApprovals: pend,
   });
 }));
@@ -340,7 +370,7 @@ const LETTER_CATEGORY = 'Manufacturer balance letters';
 const CLOSURE_OPTIONS = ['refund', 'transfer'];
 async function manufacturerBalance(deal) {
   const { computed } = await computeFor(deal);
-  return finance.round2((computed.totalPaidToSupplier || 0) - (computed.deliveredValue || 0));
+  return finance.round2((computed.totalPaidToSupplier || 0) - (computed.deliveredSupplierNet != null ? computed.deliveredSupplierNet : (computed.deliveredValue || 0)));
 }
 app.post('/api/deals/:id/complete', requireAuth, requireRole('admin'), wrap(async (req, res) => {
   const d = await getDeal(Number(req.params.id));
@@ -623,6 +653,7 @@ app.patch('/api/documents/:id', requireAuth, requireRole('admin'), wrap(async (r
 app.get('/api/documents/:id/file', requireAuth, wrap(async (req, res) => {
   const doc = (await query('SELECT * FROM documents WHERE id=$1', [Number(req.params.id)])).rows[0];
   if (!doc) return res.status(404).json({ error: 'Document not found.' });
+  if (req.user.role !== 'admin' && doc.category === SUPPLIER_DISCOUNT_DOCS) return res.status(404).json({ error: 'Document not found.' });
   res.setHeader('Content-Type', doc.mime);
   res.setHeader('Content-Disposition', `inline; filename="${String(doc.original_name).replace(/"/g, '')}"`);
   res.send(doc.content); // bytea -> Buffer
@@ -721,6 +752,58 @@ app.post('/api/deliveries/:id/void', requireAuth, requireRole('admin', 'office')
   res.json({ status: 'pending' });
 }));
 
+// ---------- discounts ----------
+// A discount has two sides: what the supplier takes off our proforma (with the
+// supplier's discount invoice or letter), and what we pass on to the client
+// (with our own discount invoice or letter). Admins only: it is financial data.
+const discountUpload = upload.fields([{ name: 'supplier_file', maxCount: 1 }, { name: 'client_file', maxCount: 1 }]);
+app.post('/api/deals/:id/discounts', requireAuth, requireRole('admin'), discountUpload, wrap(async (req, res) => {
+  const d = await getDeal(Number(req.params.id));
+  if (!d) return res.status(404).json({ error: 'Deal not found.' });
+  if (d.status !== 'active') return res.status(409).json({ error: 'Discounts can only be added to active deals.' });
+  const b = req.body || {};
+  const sAmt = num(b.supplier_amount || 0), cAmt = num(b.client_amount || 0);
+  if (sAmt < 0 || cAmt < 0) return res.status(400).json({ error: 'Discount amounts cannot be negative.' });
+  if (!(sAmt > 0) && !(cAmt > 0)) return res.status(400).json({ error: 'Enter the supplier discount, the client discount, or both.' });
+  if (!b.date) return res.status(400).json({ error: 'A discount date is required.' });
+  const { computed } = await computeFor(d);
+  if (sAmt > computed.proformaNet + eps) return res.status(400).json({ error: `The supplier discount cannot be more than the remaining proforma (${computed.proformaNet}).` });
+  if (cAmt > computed.invoiceNet + eps) return res.status(400).json({ error: `The client discount cannot be more than the remaining invoice (${computed.invoiceNet}).` });
+  const files = req.files || {};
+  const sf = files.supplier_file && files.supplier_file[0], cf = files.client_file && files.client_file[0];
+  if (sAmt > 0 && !sf) return res.status(400).json({ error: "Attach the supplier's discount invoice or letter." });
+
+  const id = (await query(
+    `INSERT INTO discounts (deal_id,date,supplier_amount,client_amount,supplier_ref,client_ref,notes,status,created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'posted',$8) RETURNING id`,
+    [d.id, b.date, sAmt, cAmt, b.supplier_ref ? String(b.supplier_ref).trim() : null,
+      b.client_ref ? String(b.client_ref).trim() : null, b.notes || null, req.user.id])).rows[0].id;
+  const store = async (f, category, link) => query(
+    `INSERT INTO documents (deal_id,category,original_name,mime,size,content,link_type,link_id,status,uploaded_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'approved',$9)`,
+    [d.id, category, f.originalname, f.mimetype, f.size, f.buffer, link, id, req.user.id]);
+  if (sf) await store(sf, SUPPLIER_DISCOUNT_DOCS, 'discount_supplier');
+  if (cf) await store(cf, 'Client discount documents', 'discount_client');
+  await audit(d.id, req.user, 'add_discount', 'discount', id, { supplier_amount: sAmt, client_amount: cAmt, supplier_ref: b.supplier_ref || null, client_ref: b.client_ref || null });
+  if (cAmt > 0) await notify(['office'], d.id, 'Discount applied',
+    `${d.ref}: a discount of ${cAmt.toFixed(2)} ${d.currency} was applied to your invoice.`, 'money', req.user.id);
+  res.json({ id });
+}));
+app.post('/api/discounts/:id/void', requireAuth, requireRole('admin'), wrap(async (req, res) => {
+  const row = (await query('SELECT * FROM discounts WHERE id=$1', [Number(req.params.id)])).rows[0];
+  if (!row) return res.status(404).json({ error: 'Discount not found.' });
+  if (row.status === 'void') return res.status(409).json({ error: 'This discount is already void.' });
+  const deal = await getDeal(row.deal_id);
+  if (deal.status !== 'active') return res.status(409).json({ error: 'This deal is not open for changes.' });
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!reason) return res.status(400).json({ error: 'Give a reason for voiding this discount.' });
+  await query("UPDATE discounts SET status='void', void_reason=$1 WHERE id=$2", [reason, row.id]);
+  await audit(row.deal_id, req.user, 'void_discount', 'discount', row.id, { reason });
+  if (Number(row.client_amount) > 0) await notify(['office'], row.deal_id, 'Discount withdrawn',
+    `${deal.ref}: the discount of ${Number(row.client_amount).toFixed(2)} ${deal.currency} was withdrawn (${reason}).`, 'warn', req.user.id);
+  res.json({ ok: true });
+}));
+
 // ---------- notifications ----------
 app.get('/api/notifications', requireAuth, wrap(async (req, res) => {
   const rows = (await query(
@@ -764,16 +847,18 @@ app.get('/api/reports', requireAuth, wrap(async (req, res) => {
   for (const d of deals) {
     const { computed: c } = await computeFor(d);
     moneyIn += c.totalReceived; moneyOut += c.totalPaidToSupplier;
-    incomeKept += c.incomeKept; incomeExpected += c.incomeExpectedTotal;
+    const adm = req.user.role === 'admin';
+    incomeKept += adm ? c.incomeKept : c.clientFeePaid; incomeExpected += adm ? c.incomeExpectedTotal : c.clientFeeTotal;
     toCollect += c.customerBalance; toPay += c.supplierOpenToPay; delivered += c.deliveredValue;
     const rowItem = {
       id: d.id, ref: d.ref, title: d.title, customer: d.customer_name, supplier: d.supplier_name,
-      currency: d.currency, status: d.status, invoiceTotal: d.invoice_total,
-      received: c.totalReceived, paid: c.totalPaidToSupplier, income: c.incomeExpectedTotal,
-      incomeKept: c.incomeKept, delivered: c.deliveredValue,
+      currency: d.currency, status: d.status, invoiceTotal: c.invoiceNet,
+      received: c.totalReceived, paid: c.totalPaidToSupplier, income: adm ? c.incomeExpectedTotal : c.clientFeeTotal,
+      incomeKept: adm ? c.incomeKept : c.clientFeePaid, delivered: c.deliveredValue,
+      discount: c.clientDiscount, supplierDiscount: adm ? c.supplierDiscount : undefined,
     };
     rows.push(rowItem);
-    if (!biggest || d.invoice_total > biggest.invoiceTotal) biggest = rowItem;
+    if (!biggest || c.invoiceNet > biggest.invoiceTotal) biggest = rowItem;
     if (!topIncome || c.incomeExpectedTotal > topIncome.income) topIncome = rowItem;
   }
   const r2 = finance.round2;
@@ -809,7 +894,11 @@ app.get('/api/reports', requireAuth, wrap(async (req, res) => {
 
 // ---------- audit ----------
 app.get('/api/deals/:id/audit', requireAuth, wrap(async (req, res) => {
-  res.json((await query('SELECT * FROM audit_log WHERE deal_id=$1 ORDER BY created_at DESC, id DESC', [Number(req.params.id)])).rows);
+  const rows = (await query('SELECT * FROM audit_log WHERE deal_id=$1 ORDER BY created_at DESC, id DESC', [Number(req.params.id)])).rows;
+  // Entry details can contain internal figures (income split, supplier discounts):
+  // only administrators get them; everyone else sees who did what, and when.
+  if (req.user.role !== 'admin') return res.json(rows.map((r) => ({ id: r.id, deal_id: r.deal_id, actor_name: r.actor_name, action: r.action, created_at: r.created_at, detail: '' })));
+  res.json(rows);
 }));
 
 // ---------- brand images ----------
