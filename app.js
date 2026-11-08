@@ -137,11 +137,12 @@ function shell(title, bodyHtml, actionsHtml = '') {
     ['deals', 'Deals'],
     ['overview', 'Overview'],
     ['completed', 'Completed Deals', State._awaitingLetters ? `<span class="badge">${State._awaitingLetters}</span>` : ''],
+    ['pool', 'Balance pool', State._poolCount ? `<span class="badge gold">${State._poolCount}</span>` : ''],
     ['reports', 'Total Finances'],
     ['approvals', 'Approvals', isAdmin() ? pendingBadge : ''],
     ['users', 'User access', ''],
     ['archive', 'Archive', ''],
-  ].filter(([n]) => (n === 'approvals' || n === 'users') ? isAdmin() : true);
+  ].filter(([n]) => (n === 'approvals' || n === 'users' || n === 'pool') ? isAdmin() : true);
 
   document.getElementById('root').innerHTML = `
     <div class="app">
@@ -397,6 +398,7 @@ async function renderDeal() {
   let d;
   try { d = await api('/deals/' + State.route.id); } catch (e) { return err(e.message); }
   State.cache.deal = d;
+  if (d.pool) State._poolCount = d.pool.available.length + (d.pool.fromThisDeal && d.pool.fromThisDeal.remaining > 0.005 ? 1 : 0);
   State.cache.docs = {}; (d.documents || []).forEach((x) => { State.cache.docs[x.id] = { mime: x.mime, name: x.original_name }; });
   const deal = d.deal, c = d.computed, cur = deal.currency, na = d.nextAction;
   const ro = deal.status !== 'active'; // read-only for entries
@@ -441,6 +443,7 @@ async function renderDeal() {
       <button class="btn" id="q-paid">${icon('out')} Payment out</button>` : ''}
       <button class="btn ${isAdmin() ? '' : 'primary'}" id="q-delivery">${icon('box')} Delivery</button>
       ${isAdmin() ? `<button class="btn" id="q-discount">${icon('tag')} Discount</button>` : ''}
+      ${isAdmin() && d.pool && d.pool.available.length ? `<button class="btn" id="q-balance">${icon('pool')} Use balance <span class="acc-chip ok">${money(d.pool.available.reduce((a, x) => a + x.remaining, 0), cur)}</span></button>` : ''}
       ${isOffice() ? `<span class="meta">Payments and discounts are entered by Europa. Deliveries you add are sent for approval.</span>` : ''}
     </div>` : ''}
 
@@ -482,6 +485,8 @@ async function renderDeal() {
   if (fr) fr.onclick = () => dealReportModal(deal.id);
   const qd = document.getElementById('q-discount');
   if (qd) qd.onclick = () => discountModal(d);
+  const qb = document.getElementById('q-balance');
+  if (qb) qb.onclick = () => useBalanceModal(d);
 }
 
 /* ================= DISCOUNTS =================
@@ -498,9 +503,9 @@ function discountsCard(d, ro) {
     return `<div class="disc-row">
       <div class="disc-date">${fdate(x.date)}</div>
       <div class="disc-sides">
-        ${admin ? `<div class="disc-side"><span class="disc-k">From supplier</span><b>${money(sAmt, cur)}</b>${x.supplier_ref ? ` <span class="meta">${esc(x.supplier_ref)}</span>` : ''}
-          ${sd ? `<a href="#" data-preview="${sd.id}" class="pill green">view document</a>` : sAmt > 0 ? '<span class="pill red">no document</span>' : ''}</div>` : ''}
-        <div class="disc-side"><span class="disc-k">${admin ? 'To client' : 'Discount on your invoice'}</span><b>${money(cAmt, cur)}</b>${x.client_ref ? ` <span class="meta">${esc(x.client_ref)}</span>` : ''}
+        ${admin ? `<div class="disc-side"><span class="disc-k">${x.kind === 'credit' ? 'From the pool' : 'From supplier'}</span><b>${money(sAmt, cur)}</b>${x.supplier_ref ? ` <span class="meta">${esc(x.supplier_ref)}</span>` : ''}
+          ${x.kind === 'credit' ? '<span class="pill blue">balance carried over</span>' : sd ? `<a href="#" data-preview="${sd.id}" class="pill green">view document</a>` : sAmt > 0 ? '<span class="pill red">no document</span>' : ''}</div>` : ''}
+        <div class="disc-side"><span class="disc-k">${admin ? 'To client' : x.kind === 'credit' ? 'Credit on your invoice' : 'Discount on your invoice'}</span><b>${money(cAmt, cur)}</b>${x.client_ref ? ` <span class="meta">${esc(x.client_ref)}</span>` : ''}
           ${cd ? `<a href="#" data-preview="${cd.id}" class="pill green">view document</a>`
             : cAmt > 0 ? (admin ? `<button class="btn sm" data-discdoc="${x.id}">Attach our document</button>` : '<span class="pill amber">document to follow</span>') : (admin ? '<span class="meta">not passed on</span>' : '')}</div>
       </div>
@@ -607,6 +612,104 @@ function discountModal(d) {
   };
 }
 
+/* Supplier names on different deals may be written slightly differently. */
+function sameParty(a, b) {
+  const n = (x) => String(x || '').toLowerCase().replace(/\b(sia|s\.?r\.?o\.?|ltd|llc|gmbh|as|uab|oy)\b/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  const x = n(a), y = n(b);
+  return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
+}
+
+/* Use a balance from the pool on this deal: deducted from what we owe the
+   supplier exactly like a supplier discount; you decide what the client gets. */
+function useBalanceModal(d) {
+  const deal = d.deal, c = d.computed, cur = deal.currency;
+  const m = (x) => money(x, cur);
+  const ratio = Number(deal.proforma_total) > 0 ? Number(deal.invoice_total) / Number(deal.proforma_total) : 1;
+  const list = (d.pool && d.pool.available || []).slice()
+    .sort((a, b) => (sameParty(b.party_name, deal.supplier_name) ? 1 : 0) - (sameParty(a.party_name, deal.supplier_name) ? 1 : 0) || a.id - b.id);
+  if (!list.length) return err('The balance pool is empty.');
+  const body = `
+    <div class="field"><label>Balance to use</label>
+      <div class="pool-pick">${list.map((x, i) => `
+        <label class="pool-opt ${sameParty(x.party_name, deal.supplier_name) ? '' : 'other'}">
+          <input type="radio" name="bp_cr" value="${x.id}" ${i === 0 ? 'checked' : ''}/>
+          <span class="po-main"><b>${m(x.remaining)}</b> left <span class="meta">of ${m(x.amount)}</span></span>
+          <span class="po-src">from <b>${esc(x.source_ref || '—')}</b> · ${esc(x.party_name)}${sameParty(x.party_name, deal.supplier_name) ? '' : ' <span class="pill amber">different supplier</span>'}</span>
+        </label>`).join('')}</div></div>
+    <div class="form-row">
+      <div class="field"><label>Amount to use on this deal</label><input id="bp_amt" inputmode="decimal"/>
+        <div class="hint" id="bp_hint"></div></div>
+      <div class="field"><label>Date</label><input id="bp_date" type="date" value="${today()}"/></div>
+    </div>
+    <div class="disc-box">
+      <div class="disc-box-h">Pass it on to the client?</div>
+      <div class="field"><label>Credit on our invoice to the client</label><input id="bp_camt" inputmode="decimal" placeholder="0.00"/>
+        <div class="chips">
+          <button type="button" class="chip" data-bpass="prop">Same proportion</button>
+          <button type="button" class="chip" data-bpass="same">Same amount</button>
+          <button type="button" class="chip" data-bpass="none">Nothing</button>
+        </div></div>
+      <div class="form-row">
+        <div class="field"><label>Our document number</label><input id="bp_cref" placeholder="credit note no. (optional)"/></div>
+        <label class="ureq" id="bp_cf_l" style="align-self:end"><span class="uicon">🧾</span><span class="utx"><b>Our credit note to the client</b><em id="bp_cf_n">optional — can be attached later</em></span>
+          <input type="file" id="bp_cf" accept="application/pdf,image/png,image/jpeg" hidden/></label>
+      </div>
+    </div>
+    <div class="disc-preview" id="bp_prev"></div>
+    <div class="field" style="margin-top:12px"><label>Notes (internal)</label><textarea id="bp_notes"></textarea></div>
+    <div id="bp_err" class="alert err hidden"></div>`;
+  const close = openModal('Use balance — ' + deal.ref, body,
+    `<button class="btn" id="bp_no">Cancel</button><button class="btn primary" id="bp_yes">Use balance</button>`, { wide: true });
+  const amtIn = document.getElementById('bp_amt'), cIn = document.getElementById('bp_camt');
+  const val = (el) => { const x = parseAmount(el.value); return Number.isFinite(x) && x > 0 ? Math.round(x * 100) / 100 : 0; };
+  const chosen = () => list.find((x) => String(x.id) === (document.querySelector('[name="bp_cr"]:checked') || {}).value) || list[0];
+  const maxFor = (x) => Math.round(Math.min(x.remaining, c.proformaNet) * 100) / 100;
+  const preview = () => {
+    const x = chosen(), a = val(amtIn), k = val(cIn);
+    document.getElementById('bp_hint').textContent = `Up to ${m(maxFor(x))} (balance left ${m(x.remaining)} · still on this proforma ${m(c.proformaNet)})`;
+    const box = document.getElementById('bp_prev');
+    if (!a) { box.innerHTML = '<div class="meta">Enter the amount to see the effect.</div>'; return; }
+    const P1 = Math.max(0, c.proformaNet - a), I1 = Math.max(0, c.invoiceNet - k);
+    const inc0 = Math.max(0, c.invoiceNet - c.proformaNet), inc1 = Math.max(0, I1 - P1), diff = inc1 - inc0;
+    const line = (t, x0, x1, cls) => `<div class="pv-row"><span>${t}</span><span class="pv-was">${x0}</span><span class="pv-arrow">→</span><b class="${cls || ''}">${x1}</b></div>`;
+    box.innerHTML = `
+      ${line('We still owe the supplier', m(c.supplierOpenToPay || 0), m(Math.max(0, P1 - (c.totalPaidToSupplier || 0))))}
+      ${line('Supplier proforma after deductions', m(c.proformaNet), m(P1))}
+      ${line('Invoice to client after deductions', m(c.invoiceNet), m(I1))}
+      ${line('Our income on this deal', m(inc0), m(inc1), diff > 0.005 ? 'green' : diff < -0.005 ? 'red' : '')}
+      ${line(`Left in the pool from ${esc(x.source_ref || '')}`, m(x.remaining), m(Math.max(0, x.remaining - a)))}
+      <div class="pv-sum">${diff > 0.005 ? `You keep <b>${m(diff)}</b> of this balance as extra income on this deal.` : diff < -0.005 ? `Your income on this deal changes by <b>−${m(-diff)}</b>.` : 'Your income on this deal stays the same.'}
+        Margin after: <b>${P1 > 0 ? ((inc1 / P1) * 100).toFixed(2) : '0.00'}%</b> on the proforma.</div>`;
+  };
+  const setDefault = () => { amtIn.value = maxFor(chosen()) || ''; preview(); };
+  document.querySelectorAll('[name="bp_cr"]').forEach((r) => (r.onchange = setDefault));
+  amtIn.oninput = preview; cIn.oninput = preview;
+  document.querySelectorAll('[data-bpass]').forEach((b) => (b.onclick = () => {
+    const a = val(amtIn);
+    cIn.value = b.dataset.bpass === 'prop' ? (Math.round(a * ratio * 100) / 100 || '') : b.dataset.bpass === 'same' ? (a || '') : '';
+    preview();
+  }));
+  document.getElementById('bp_cf').addEventListener('change', (e) => {
+    const f = e.target.files[0]; document.getElementById('bp_cf_n').textContent = f ? f.name : 'no file chosen';
+    document.getElementById('bp_cf_l').classList.toggle('ok', !!f);
+  });
+  document.getElementById('bp_no').onclick = close;
+  document.getElementById('bp_yes').onclick = async () => {
+    const x = chosen(), a = val(amtIn), k = val(cIn), cf = document.getElementById('bp_cf').files[0];
+    if (!a) return showErr('bp_err', 'Enter the amount to use.');
+    const fd = new FormData();
+    fd.append('credit_id', String(x.id)); fd.append('amount', String(a)); fd.append('client_amount', String(k));
+    fd.append('date', v('bp_date')); fd.append('client_ref', v('bp_cref')); fd.append('notes', document.getElementById('bp_notes').value);
+    if (cf) fd.append('client_file', cf);
+    try {
+      const r = await api('/deals/' + deal.id + '/use-credit', { method: 'POST', body: fd });
+      close(); ok(`Balance used — ${m(r.remaining)} left in the pool from ${x.source_ref}.`); await renderDeal();
+      if (k > 0 && !cf) discountLetterModal(State.cache.deal, r.id);
+    } catch (e) { showErr('bp_err', e.message); }
+  };
+  setDefault();
+}
+
 function wireDiscounts(d) {
   const add = document.getElementById('disc-add');
   if (add) add.onclick = () => discountModal(d);
@@ -642,14 +745,17 @@ function discountLetterText(d, x, lang) {
   const amt = Number(x.client_amount) || 0;
   const invNo = deal.invoice_number ? (lang === 'ru' ? ` № ${deal.invoice_number}` : ` ${deal.invoice_number}`) : '';
   const credit = Math.max(0, c.totalReceived - c.invoiceNet);
+  const srcRef = x.kind === 'credit' && x.supplier_ref ? String(x.supplier_ref).replace(/^Balance from /, '') : '';
   const signer = State.user && State.user.name && State.user.name !== 'Administrator' ? State.user.name + '\n' : '';
   if (lang === 'ru') {
     const n = (v) => ruNum(v) + ' €';
-    return `Тема: Скидка по инвойсу${invNo} — сделка ${deal.ref}
+    return `Тема: ${x.kind === 'credit' ? 'Зачёт остатка' : 'Скидка'} по инвойсу${invNo} — сделка ${deal.ref}
 
 Уважаемые коллеги ${deal.customer_name},
 
-Настоящим подтверждаем скидку в размере ${n(amt)} по нашему инвойсу${invNo} (сделка ${deal.ref}) на сумму ${n(deal.invoice_total)}.
+${x.kind === 'credit'
+  ? `Настоящим подтверждаем зачёт в размере ${n(amt)} по нашему инвойсу${invNo} (сделка ${deal.ref}) на сумму ${n(deal.invoice_total)} — это остаток по предыдущей сделке${srcRef ? ' ' + srcRef : ''}.`
+  : `Настоящим подтверждаем скидку в размере ${n(amt)} по нашему инвойсу${invNo} (сделка ${deal.ref}) на сумму ${n(deal.invoice_total)}.`}
 
 С учетом скидки${c.discountCount > 1 ? ' (всего скидок: ' + n(c.clientDiscount) + ')' : ''} сумма инвойса составляет ${n(c.invoiceNet)}.
 На сегодняшний день вами оплачено ${n(c.totalReceived)}. ${credit > 0.005 ? `Ваша переплата составляет ${n(credit)} — по согласованию мы вернем ее или зачтем в счет следующей сделки.` : `Остаток к оплате: ${n(c.customerBalance)}.`}
@@ -659,11 +765,13 @@ ${signer}Europa Pharmaceutical s. r. o.
 ${ruDate(x.date)}`;
   }
   const n = (v) => money(v, cur);
-  return `Subject: Discount on invoice${invNo} — deal ${deal.ref}
+  return `Subject: ${x.kind === 'credit' ? 'Credit' : 'Discount'} on invoice${invNo} — deal ${deal.ref}
 
 Dear ${deal.customer_name} team,
 
-We are pleased to confirm a discount of ${n(amt)} on our invoice${invNo} for deal ${deal.ref}, originally issued for ${n(deal.invoice_total)}.
+${x.kind === 'credit'
+  ? `We confirm a credit of ${n(amt)} on our invoice${invNo} for deal ${deal.ref}, originally issued for ${n(deal.invoice_total)}. This is the balance carried over from a previous deal${srcRef ? ' (' + srcRef + ')' : ''}.`
+  : `We are pleased to confirm a discount of ${n(amt)} on our invoice${invNo} for deal ${deal.ref}, originally issued for ${n(deal.invoice_total)}.`}
 
 After the discount${c.discountCount > 1 ? ` (total discounts ${n(c.clientDiscount)})` : ''}, the invoice amount is ${n(c.invoiceNet)}.
 You have paid ${n(c.totalReceived)} to date. ${credit > 0.005 ? `This leaves a credit of ${n(credit)} in your favour, which we will refund or apply to your next deal, as agreed.` : `The remaining balance is ${n(c.customerBalance)}.`}
@@ -1129,13 +1237,13 @@ function accountsCard(d) {
   const client = statementRows(
     { date: opened, desc: `Invoice${ref(deal.invoice_number)}`, charge: Number(deal.invoice_total) || 0, kind: 'open' },
     [
-      ...posted(d.discounts).filter((x) => Number(x.client_amount) > 0).map((x) => ({ date: x.date, desc: `Discount${ref(x.client_ref)}`, credit: Number(x.client_amount), kind: 'disc' })),
+      ...posted(d.discounts).filter((x) => Number(x.client_amount) > 0).map((x) => ({ date: x.date, desc: `${x.kind === 'credit' ? 'Credit from a previous deal' : 'Discount'}${ref(x.client_ref)}`, credit: Number(x.client_amount), kind: 'disc' })),
       ...posted(d.customerPayments).map((p) => ({ date: p.date, desc: `Payment received${ref(p.bank_ref)}`, credit: Number(p.amount_received) || 0, kind: 'pay' })),
     ]);
   const supplier = admin ? statementRows(
     { date: opened, desc: `Proforma${ref(deal.proforma_number)}`, charge: Number(deal.proforma_total) || 0, kind: 'open' },
     [
-      ...posted(d.discounts).filter((x) => Number(x.supplier_amount) > 0).map((x) => ({ date: x.date, desc: `Supplier discount${ref(x.supplier_ref)}`, credit: Number(x.supplier_amount), kind: 'disc' })),
+      ...posted(d.discounts).filter((x) => Number(x.supplier_amount) > 0).map((x) => ({ date: x.date, desc: x.kind === 'credit' ? `${esc(x.supplier_ref || 'Balance from the pool')}` : `Supplier discount${ref(x.supplier_ref)}`, credit: Number(x.supplier_amount), kind: 'disc' })),
       ...posted(d.supplierPayments).map((p) => ({ date: p.date, desc: `Payment sent${ref(p.bank_ref)}`, credit: Number(p.amount) || 0, kind: 'pay' })),
     ]) : null;
   const chip = (rows, kind) => {
@@ -1220,6 +1328,11 @@ function dealProgress(d) {
   if (c.customerOverpayment > 0.005) add('info', `Client overpaid ${m(c.customerOverpayment)} — refund or carry over`, 'go:sec-accounts', 'View');
   if (admin && c.supplierOpenToPay > 0.005) add('due', `${m(c.supplierOpenToPay)} still to pay the supplier`, !ro ? 'pay-out' : 'go:sec-accounts', !ro ? 'Payment out' : 'View');
   if (admin && c.supplierOverpaid > 0.005) add('info', `Supplier owes us ${m(c.supplierOverpaid)}`, 'go:sec-accounts', 'View');
+  if (admin && !ro && d.pool && d.pool.available.length && c.supplierOpenToPay > 0.005) {
+    const same = d.pool.available.filter((x) => sameParty(x.party_name, deal.supplier_name));
+    const total = (same.length ? same : d.pool.available).reduce((a, x) => a + x.remaining, 0);
+    add('info', `${m(total)} of supplier balance in the pool${same.length ? ` from ${same.map((x) => esc(x.source_ref)).join(', ')}` : ''} can be used here`, 'balance', 'Use balance');
+  }
   if (c.overDelivery > 0.005) add('alert', `Delivered ${m(c.overDelivery)} more than the proforma`, 'go:sec-deliveries', 'Check');
   else if (c.deliveryOutstanding > 0.005) add('info', `${m(c.deliveryOutstanding)} of goods still to be delivered`, !ro && canWrite() ? 'delivery' : 'go:sec-deliveries', !ro && canWrite() ? 'Add delivery' : 'View');
   if (admin) {
@@ -1271,6 +1384,7 @@ function wireProgress(d) {
     if (a === 'edit') return dealDetailsModal(deal.id, () => renderDeal());
     if (a === 'approvals') return go('approvals');
     if (a === 'complete') return completeDeal(deal);
+    if (a === 'balance') return useBalanceModal(d);
   }));
 }
 
@@ -1284,6 +1398,7 @@ function icon(name) {
     doc: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/>',
     edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/>',
     expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+    pool: '<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>',
     collapse: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
   };
   return `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${P[name] || ''}</svg>`;
@@ -2522,9 +2637,9 @@ function completeDeal(deal) {
       <div class="alert warn">The manufacturer still holds <b>${money(mBal, cur)}</b>. The deal will be marked <b>completed — awaiting manufacturer letter</b>, and is fully closed once their balance letter is attached.</div>
       <div class="field"><label>How will this balance be settled?</label>
         <label class="rep-item"><input type="radio" name="cl_opt" value="refund" checked/> <span><b>Refund</b> — the manufacturer pays ${money(mBal, cur)} back to us</span></label>
-        <label class="rep-item"><input type="radio" name="cl_opt" value="transfer"/> <span><b>Transfer</b> — the balance is carried over to other deals</span></label>
+        <label class="rep-item"><input type="radio" name="cl_opt" value="transfer"/> <span><b>Keep as credit</b> — put ${money(mBal, cur)} in the balance pool and use it on another deal later</span></label>
       </div>
-      <div class="field hidden" id="cl_note_f"><label>Transfer to which deal(s)?</label>
+      <div class="field hidden" id="cl_note_f"><label>Intended for (optional — you choose the deal when you use it)</label>
         ${others.length ? `<select id="cl_note_sel"><option value="">— choose a deal —</option>${others.map((o) => `<option value="${esc(o.ref)}">${esc(o.ref)} — ${esc(o.title)}</option>`).join('')}<option value="__other">Other / write it in</option></select>` : ''}
         <input id="cl_note" placeholder="e.g. EP-2026-003 or the next proforma" class="${others.length ? 'hidden' : ''}" style="margin-top:8px"/></div>`
     : mBal < -0.005 ? `<div class="alert warn">Goods worth <b>${money(-mBal, cur)}</b> have been delivered but not yet paid to the manufacturer. You can still complete the deal, but that payment remains due.</div>`
@@ -2552,6 +2667,17 @@ function completeDeal(deal) {
 }
 
 /* Panel shown on completed deals: status, open balance, letter upload. */
+function poolLine(d) {
+  const deal = d.deal, cur = deal.currency, cr = d.pool && d.pool.fromThisDeal;
+  if (!isAdmin() || !(Number(deal.closure_balance) > 0.005)) return '';
+  if (cr) {
+    return `<div class="cp-pool"><span class="cp-pool-ic">◎</span><div><b>${money(cr.remaining, cur)} available in the balance pool</b>
+      <span>${money(cr.used, cur)} of ${money(cr.amount, cur)} used${cr.uses.filter((u) => u.status === 'posted').length ? ' — on ' + cr.uses.filter((u) => u.status === 'posted').map((u) => `<a href="#" data-opendeal="${u.deal_id}">${esc(u.ref)}</a> (${money(u.supplier_amount, cur)})`).join(', ') : ''}</span></div>
+      ${cr.used < 0.005 ? '<button type="button" class="btn sm" id="cp-unpool">Switch to refund</button>' : ''}</div>`;
+  }
+  return `<div class="cp-pool none"><span class="cp-pool-ic">◎</span><div><b>Not in the balance pool</b><span>The manufacturer is expected to refund ${money(deal.closure_balance, cur)}. You can keep it as credit instead and use it on another deal.</span></div>
+    <button type="button" class="btn sm" id="cp-pool">Keep as credit</button></div>`;
+}
 function closurePanel(d) {
   const deal = d.deal, cur = deal.currency;
   if (!deal.closure_state) return '';
@@ -2561,19 +2687,19 @@ function closurePanel(d) {
   if (deal.closure_state === 'closed') {
     if (!(Number(deal.closure_balance) > 0.005)) return `<div class="closure-panel done"><div class="cp-head"><span class="cp-state">Completed</span> Fully closed — no open balances.</div></div>`;
     return `<div class="closure-panel done">
-      <div class="cp-head"><span class="cp-state">Closed</span> The manufacturer confirmed the balance of <b>${money(deal.closure_balance, cur)}</b> (${deal.closure_option === 'transfer' ? 'transfer to other deals' : 'refund to us'}).</div>
-      ${files}
+      <div class="cp-head"><span class="cp-state">Closed</span> The manufacturer confirmed the balance of <b>${money(deal.closure_balance, cur)}</b> (${deal.closure_option === 'transfer' ? 'kept as credit' : 'refund to us'}).</div>
+      ${files}${poolLine(d)}
     </div>`;
   }
   const how = deal.closure_option === 'transfer'
-    ? `to be <b>transferred to other deals</b>${deal.closure_note ? ` (${esc(deal.closure_note)})` : ''}`
+    ? `<b>kept as credit in the balance pool</b>${deal.closure_note ? ` (intended for ${esc(deal.closure_note)})` : ''}`
     : 'to be <b>refunded to Europa</b>';
   return `<div class="closure-panel open">
     <div class="cp-head"><span class="cp-state">Completed — not yet closed</span>
       The manufacturer still holds <b>${money(deal.closure_balance, cur)}</b>, ${how}.</div>
     <div class="cp-body">A balance letter from the manufacturer must be attached to close this deal.
       ${waitingApproval.length ? (isAdmin() ? ' A letter has been uploaded — approve it below to close the deal.' : ' Your uploaded letter is waiting for Europa\'s approval.') : ''}</div>
-    ${files}
+    ${files}${poolLine(d)}
     <div class="btn-row" style="margin-top:12px">
       ${canWrite() ? `<button class="btn primary" id="cp-upload">Upload manufacturer letter</button>` : ''}
       ${isAdmin() ? `<button class="btn" id="cp-letter">Prepare letter to manufacturer</button>` : ''}
@@ -2582,6 +2708,13 @@ function closurePanel(d) {
   </div>`;
 }
 function wireClosurePanel(d) {
+  const setOpt = async (option) => {
+    try { await api('/deals/' + d.deal.id + '/closure', { method: 'POST', body: { option } }); ok(option === 'transfer' ? 'Balance added to the pool.' : 'Balance removed from the pool.'); renderDeal(); }
+    catch (e) { err(e.message); }
+  };
+  const p1 = document.getElementById('cp-pool'); if (p1) p1.onclick = () => setOpt('transfer');
+  const p2 = document.getElementById('cp-unpool'); if (p2) p2.onclick = () => setOpt('refund');
+  document.querySelectorAll('[data-opendeal]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); go('deal', { id: Number(a.dataset.opendeal) }); }));
   const up = document.getElementById('cp-upload');
   if (up) up.onclick = () => quickUpload(d.deal.id, 'Manufacturer balance letters');
   const lt = document.getElementById('cp-letter');
@@ -2649,7 +2782,7 @@ function letterModal(d) {
   const body = `
     <div class="form-row">
       <div class="field"><label>Settlement</label>
-        <select id="lt_opt"><option value="refund" ${opt0 === 'refund' ? 'selected' : ''}>Refund to us</option><option value="transfer" ${opt0 === 'transfer' ? 'selected' : ''}>Transfer to other deals</option></select></div>
+        <select id="lt_opt"><option value="refund" ${opt0 === 'refund' ? 'selected' : ''}>Refund to us</option><option value="transfer" ${opt0 === 'transfer' ? 'selected' : ''}>Keep as credit (balance pool)</option></select></div>
       <div class="field"><label>Language</label>
         <select id="lt_lang"><option value="en">English</option><option value="ru">Русский</option></select></div>
     </div>
@@ -2981,10 +3114,68 @@ function wireDealSearch(inputId, deals) {
   };
 }
 
+/* ================= BALANCE POOL ================= */
+async function renderPool() {
+  let r;
+  try { r = await api('/credits'); } catch (e) { return err(e.message); }
+  State._poolCount = r.credits.filter((x) => x.remaining > 0.005).length;
+  const total = r.credits.reduce((a, x) => a + x.remaining, 0);
+  const used = r.credits.reduce((a, x) => a + x.used, 0);
+  const m = (v, cur) => money(v, cur || 'EUR');
+  const bySupplier = {};
+  r.credits.forEach((x) => { (bySupplier[x.party_name] = bySupplier[x.party_name] || []).push(x); });
+  const groups = Object.keys(bySupplier).sort().map((name) => {
+    const list = bySupplier[name], left = list.reduce((a, x) => a + x.remaining, 0);
+    return `<div class="pool-group">
+      <div class="pool-gh"><div><span class="meta">Supplier</span><h3>${esc(name)}</h3></div>
+        <div class="stmt-bal ${left > 0.005 ? 'credit' : 'ok'}"><span>Available</span><b>${m(left)}</b></div></div>
+      ${list.map((x) => {
+        const usePct = x.amount > 0 ? Math.min(100, (x.used / x.amount) * 100) : 0;
+        const uses = x.uses.filter((u) => u.status === 'posted');
+        return `<div class="pool-item">
+          <div class="pi-top">
+            <div><b>From <a href="#" data-opendeal="${x.source_deal_id}">${esc(x.source_ref || '—')}</a></b> <span class="meta">${esc(x.source_title || '')} · added ${fdate(x.created_at)}</span>
+              ${x.note ? `<div class="meta">Intended for: ${esc(x.note)}</div>` : ''}</div>
+            <div class="pi-amt"><b>${m(x.remaining, x.currency)}</b><span class="meta">left of ${m(x.amount, x.currency)}</span></div>
+          </div>
+          <div class="kf-bar" title="${Math.round(usePct)}% used"><span style="width:${usePct}%"></span></div>
+          ${uses.length ? `<ul class="pi-uses">${uses.map((u) => `<li>${fdate(u.date)} · used <b>${m(u.supplier_amount, x.currency)}</b> on <a href="#" data-opendeal="${u.deal_id}">${esc(u.ref)}</a>${Number(u.client_amount) > 0 ? ` · ${m(u.client_amount, x.currency)} passed on to the client` : ' · not passed on'}</li>`).join('')}</ul>`
+            : '<div class="meta">Not used yet — open any active deal and choose “Use balance”.</div>'}
+          ${x.used < 0.005 ? `<div class="pi-act"><button type="button" class="btn sm" data-unpool="${x.id}">Remove from pool</button></div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>`;
+  }).join('');
+  const cands = r.candidates.length ? card('Completed deals with a balance not in the pool',
+    `<div class="meta" style="margin-bottom:8px">These deals were completed with money still held by the manufacturer, set to be refunded. Add a balance here to use it on another deal instead.</div>
+     ${r.candidates.map((x) => `<div class="pool-cand"><div><b>${esc(x.ref)}</b> <span class="meta">${esc(x.title)} · ${esc(x.supplier_name)}</span></div>
+       <b>${m(x.closure_balance, x.currency)}</b><button type="button" class="btn sm primary" data-topool="${x.id}">Add to pool</button></div>`).join('')}`) : '';
+  shell('Balance pool', `
+    <p class="lead">When a supplier still holds your money after a deal is completed — for example you paid more than they delivered — keep it as credit here, then use it on another deal. It is deducted from what you owe the supplier exactly like a discount, and you decide whether the client gets it too.</p>
+    <div class="stats">
+      <div class="stat"><div class="label">Available to use</div><div class="value green tnum">${m(total)}</div></div>
+      <div class="stat"><div class="label">Balances in the pool</div><div class="value">${r.credits.length}</div></div>
+      <div class="stat"><div class="label">Already used on deals</div><div class="value tnum">${m(used)}</div></div>
+      <div class="stat"><div class="label">Completed deals not yet in the pool</div><div class="value ${r.candidates.length ? 'amber' : ''}">${r.candidates.length}</div></div>
+    </div>
+    ${r.credits.length ? groups : `<div class="empty"><h3>The pool is empty</h3><p>Balances appear here when you complete a deal and choose “Keep as credit”.</p></div>`}
+    ${cands}
+  `);
+  document.querySelectorAll('[data-opendeal]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); go('deal', { id: Number(a.dataset.opendeal) }); }));
+  document.querySelectorAll('[data-topool]').forEach((b) => (b.onclick = async () => {
+    try { await api('/credits', { method: 'POST', body: { deal_id: Number(b.dataset.topool) } }); ok('Balance added to the pool.'); renderPool(); }
+    catch (e) { err(e.message); }
+  }));
+  document.querySelectorAll('[data-unpool]').forEach((b) => (b.onclick = async () => {
+    try { await api('/credits/' + b.dataset.unpool + '/void', { method: 'POST', body: { reason: 'Removed from the pool' } }); ok('Removed from the pool — the deal is set back to refund.'); renderPool(); }
+    catch (e) { err(e.message); }
+  }));
+}
+
 /* ================= COMPLETED DEALS ================= */
 function closureBadge(d, cur) {
   if (d.closure_state === 'awaiting_letter') {
-    const how = d.closure_option === 'transfer' ? 'to be transferred to other deals' : 'to be refunded to us';
+    const how = d.closure_option === 'transfer' ? 'kept as credit in the balance pool' : 'to be refunded to us';
     return `<div class="closure-badge open"><b>Completed — open balance ${money(d.closure_balance, cur)}</b>
       <span>The manufacturer holds this amount (${how}). Their balance letter must be attached.</span></div>`;
   }
@@ -3217,7 +3408,9 @@ function partnerReportSection(n, d, opts) {
   const discs = (d.discounts || []).filter((x) => x.status === 'posted' && Number(x.client_amount) > 0);
   if (discs.length) {
     L.push('');
-    discs.forEach((x) => L.push(`Вам была предоставлена скидка ${ruNum(x.client_amount)} € (${ruDate(x.date)}${x.client_ref ? `, кредит-нота № ${x.client_ref}` : ''}).`));
+    discs.forEach((x) => L.push(x.kind === 'credit'
+      ? `Вам был зачтён остаток по предыдущей сделке${x.supplier_ref ? ` (${String(x.supplier_ref).replace(/^Balance from /, '')})` : ''}: ${ruNum(x.client_amount)} € (${ruDate(x.date)}${x.client_ref ? `, кредит-нота № ${x.client_ref}` : ''}).`
+      : `Вам была предоставлена скидка ${ruNum(x.client_amount)} € (${ruDate(x.date)}${x.client_ref ? `, кредит-нота № ${x.client_ref}` : ''}).`));
   }
   L.push('');
   L.push('С финансовой точки зрения:');
@@ -3391,6 +3584,7 @@ function render() {
   if (r === 'deals') return renderDeals();
   if (r === 'overview') return renderOverview();
   if (r === 'completed') return renderCompleted();
+  if (r === 'pool') return isAdmin() ? renderPool() : go('deals');
   if (r === 'flow') return renderFlow();
   if (r === 'reports') return renderReports();
   if (r === 'deal') return renderDeal();

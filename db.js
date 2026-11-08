@@ -189,6 +189,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 // Additive migrations for databases created by earlier versions.
 const MIGRATIONS = `
+CREATE TABLE IF NOT EXISTS credits (
+  id SERIAL PRIMARY KEY,
+  party_type TEXT NOT NULL DEFAULT 'supplier',
+  party_name TEXT NOT NULL,
+  source_deal_id INTEGER REFERENCES deals(id),
+  amount NUMERIC NOT NULL,
+  note TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','void')),
+  void_reason TEXT,
+  created_by INTEGER,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+ALTER TABLE discounts ADD COLUMN IF NOT EXISTS credit_id INTEGER;
+ALTER TABLE discounts ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'discount';
 ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS pay_status TEXT NOT NULL DEFAULT 'unpaid';
 ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS paid_date TEXT;
 ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS planned_pay_date TEXT;

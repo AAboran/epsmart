@@ -99,7 +99,7 @@ function scrubComputed(c, user) {
 function scrubDiscounts(rows, user) {
   if (user.role === 'admin') return rows;
   return (rows || []).filter((x) => Number(x.client_amount) > 0)
-    .map((x) => { const o = { ...x }; delete o.supplier_amount; delete o.supplier_ref; delete o.notes; return o; });
+    .map((x) => { const o = { ...x }; delete o.supplier_amount; delete o.supplier_ref; delete o.notes; delete o.credit_id; return o; });
 }
 function scrubDocuments(rows, user) {
   if (user.role === 'admin') return rows;
@@ -249,8 +249,18 @@ app.get('/api/deals/:id', requireAuth, wrap(async (req, res) => {
     const kept = finance.round2(applied * shareRatio);
     return { ...p, kept, reserved: finance.round2(applied - kept) };
   });
+  let pool = undefined;
+  if (req.user.role === 'admin') {
+    const open = (await query("SELECT * FROM credits WHERE status='open' ORDER BY created_at, id")).rows;
+    const views = [];
+    for (const cr of open) views.push(await creditView(cr));
+    pool = {
+      available: views.filter((v) => v.remaining > 0.005 && v.source_deal_id !== d.id),
+      fromThisDeal: views.find((v) => v.source_deal_id === d.id) || null,
+    };
+  }
   res.json({
-    deal: scrubDeal(d, req.user), ...entries,
+    deal: scrubDeal(d, req.user), ...entries, pool,
     customerPayments: scrubPayments(payments, req.user),
     discounts: scrubDiscounts(entries.discounts, req.user),
     documents: scrubDocuments(entries.documents, req.user),
@@ -362,6 +372,48 @@ function lifecycle(action, fromStatuses, toStatus) {
     res.json({ ok: true, status: toStatus });
   });
 }
+// ---------- balance pool ----------
+// Money a supplier still holds from a completed deal (paid more than they
+// delivered) can be kept as a credit and used later on another deal, where it
+// is deducted like a supplier discount. Remaining = amount − posted uses.
+async function creditUsed(creditId) {
+  const r = (await query("SELECT COALESCE(SUM(supplier_amount),0) AS s FROM discounts WHERE credit_id=$1 AND status='posted'", [creditId])).rows[0];
+  return finance.round2(Number(r.s) || 0);
+}
+async function creditForDeal(dealId) {
+  return (await query("SELECT * FROM credits WHERE source_deal_id=$1 AND status='open' ORDER BY id DESC LIMIT 1", [dealId])).rows[0];
+}
+async function addDealToPool(d, user) {
+  if (await creditForDeal(d.id)) return null;
+  const amount = finance.round2(Number(d.closure_balance) || 0);
+  if (!(amount > eps)) return null;
+  const id = (await query('INSERT INTO credits (party_type,party_name,source_deal_id,amount,note,created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+    ['supplier', d.supplier_name, d.id, amount, d.closure_note || null, user.id])).rows[0].id;
+  await audit(d.id, user, 'balance_to_pool', 'credit', id, { amount });
+  return id;
+}
+async function removeDealFromPool(d, user) {
+  const cr = await creditForDeal(d.id);
+  if (!cr) return { ok: true };
+  const used = await creditUsed(cr.id);
+  if (used > eps) {
+    const uses = (await query("SELECT dl.ref FROM discounts x JOIN deals dl ON dl.id=x.deal_id WHERE x.credit_id=$1 AND x.status='posted'", [cr.id])).rows.map((r) => r.ref);
+    return { ok: false, error: `This balance is already used on ${[...new Set(uses)].join(', ')}. Void that use first.` };
+  }
+  await query("UPDATE credits SET status='void', void_reason='Removed from the pool' WHERE id=$1", [cr.id]);
+  await audit(d.id, user, 'balance_removed_from_pool', 'credit', cr.id, {});
+  return { ok: true };
+}
+async function creditView(cr) {
+  const used = await creditUsed(cr.id);
+  const src = cr.source_deal_id ? await getDeal(cr.source_deal_id) : null;
+  const uses = (await query(
+    `SELECT x.id, x.date, x.supplier_amount, x.client_amount, x.status, dl.id AS deal_id, dl.ref, dl.title
+     FROM discounts x JOIN deals dl ON dl.id=x.deal_id WHERE x.credit_id=$1 ORDER BY x.date, x.id`, [cr.id])).rows;
+  return { ...cr, amount: Number(cr.amount), used, remaining: finance.round2(Number(cr.amount) - used),
+    source_ref: src ? src.ref : null, source_title: src ? src.title : null, currency: src ? src.currency : 'EUR', uses };
+}
+
 // ---------- completing a deal ----------
 // Paid to the manufacturer vs goods delivered (proforma value). If the
 // manufacturer still holds our money, the deal is completed but stays
@@ -384,6 +436,7 @@ app.post('/api/deals/:id/complete', requireAuth, requireRole('admin'), wrap(asyn
       closure_balance=$1, closure_option=$2, closure_note=$3, closed_at=NULL WHERE id=$4`,
       [balance, option, b.note ? String(b.note).trim() : null, d.id]);
     await audit(d.id, req.user, 'complete_deal_awaiting_letter', 'deal', d.id, { balance, option, note: b.note || null });
+    if (option === 'transfer') await addDealToPool(await getDeal(d.id), req.user);
     await notify(['office'], d.id, 'Deal completed — balance letter needed',
       `${d.ref} was marked complete. The manufacturer still holds ${balance.toFixed(2)} ${d.currency}; their balance letter must be attached.`, 'warn', req.user.id);
     return res.json({ ok: true, status: 'completed', closure_state: 'awaiting_letter', balance });
@@ -398,6 +451,8 @@ app.post('/api/deals/:id/reopen', requireAuth, requireRole('admin'), wrap(async 
   const d = await getDeal(Number(req.params.id));
   if (!d) return res.status(404).json({ error: 'Deal not found.' });
   if (!['completed', 'archived'].includes(d.status)) return res.status(409).json({ error: `Cannot reopen a deal in "${d.status}" state.` });
+  const pooled = await removeDealFromPool(d, req.user);
+  if (!pooled.ok) return res.status(409).json({ error: pooled.error });
   await query(`UPDATE deals SET status='active', completed_at=NULL, closure_state=NULL, closure_balance=NULL,
     closure_option=NULL, closure_note=NULL, closed_at=NULL WHERE id=$1`, [d.id]);
   await audit(d.id, req.user, 'reopen_deal', 'deal', d.id, {});
@@ -407,10 +462,15 @@ app.post('/api/deals/:id/reopen', requireAuth, requireRole('admin'), wrap(async 
 app.post('/api/deals/:id/closure', requireAuth, requireRole('admin'), wrap(async (req, res) => {
   const d = await getDeal(Number(req.params.id));
   if (!d) return res.status(404).json({ error: 'Deal not found.' });
-  if (d.closure_state !== 'awaiting_letter') return res.status(409).json({ error: 'This deal is not waiting for a balance letter.' });
+  if (!d.closure_state || !(Number(d.closure_balance) > eps)) return res.status(409).json({ error: 'This deal has no manufacturer balance to settle.' });
   const b = req.body || {};
-  if (!CLOSURE_OPTIONS.includes(b.option)) return res.status(400).json({ error: 'Choose refund or transfer.' });
+  if (!CLOSURE_OPTIONS.includes(b.option)) return res.status(400).json({ error: 'Choose refund or keep as credit.' });
+  if (b.option === 'refund') {
+    const r = await removeDealFromPool(d, req.user);
+    if (!r.ok) return res.status(409).json({ error: r.error });
+  }
   await query('UPDATE deals SET closure_option=$1, closure_note=$2 WHERE id=$3', [b.option, b.note ? String(b.note).trim() : null, d.id]);
+  if (b.option === 'transfer') await addDealToPool(await getDeal(d.id), req.user);
   await audit(d.id, req.user, 'set_closure_option', 'deal', d.id, { option: b.option, note: b.note || null });
   res.json({ ok: true });
 }));
@@ -802,6 +862,73 @@ app.post('/api/discounts/:id/void', requireAuth, requireRole('admin'), wrap(asyn
   if (Number(row.client_amount) > 0) await notify(['office'], row.deal_id, 'Discount withdrawn',
     `${deal.ref}: the discount of ${Number(row.client_amount).toFixed(2)} ${deal.currency} was withdrawn (${reason}).`, 'warn', req.user.id);
   res.json({ ok: true });
+}));
+
+// ---------- balance pool endpoints (admin) ----------
+app.get('/api/credits', requireAuth, requireRole('admin'), wrap(async (req, res) => {
+  const rows = (await query("SELECT * FROM credits WHERE status='open' ORDER BY created_at, id")).rows;
+  const credits = [];
+  for (const cr of rows) credits.push(await creditView(cr));
+  // completed deals whose manufacturer balance is not in the pool yet
+  const candidates = (await query(
+    `SELECT id, ref, title, supplier_name, currency, closure_balance, closure_option, closure_state FROM deals
+     WHERE status='completed' AND closure_balance > 0.005 AND id NOT IN (SELECT source_deal_id FROM credits WHERE status='open' AND source_deal_id IS NOT NULL)
+     ORDER BY id`)).rows;
+  res.json({ credits, candidates });
+}));
+app.post('/api/credits', requireAuth, requireRole('admin'), wrap(async (req, res) => {
+  const d = await getDeal(Number((req.body || {}).deal_id));
+  if (!d) return res.status(404).json({ error: 'Deal not found.' });
+  if (d.status !== 'completed' || !(Number(d.closure_balance) > eps)) return res.status(409).json({ error: 'Only a completed deal with a manufacturer balance can be added to the pool.' });
+  if (await creditForDeal(d.id)) return res.status(409).json({ error: 'This balance is already in the pool.' });
+  await query("UPDATE deals SET closure_option='transfer' WHERE id=$1", [d.id]);
+  const id = await addDealToPool(await getDeal(d.id), req.user);
+  res.json({ id });
+}));
+app.post('/api/credits/:id/void', requireAuth, requireRole('admin'), wrap(async (req, res) => {
+  const cr = (await query('SELECT * FROM credits WHERE id=$1', [Number(req.params.id)])).rows[0];
+  if (!cr || cr.status !== 'open') return res.status(404).json({ error: 'Balance not found.' });
+  if ((await creditUsed(cr.id)) > eps) return res.status(409).json({ error: 'Part of this balance is already used. Void those uses first.' });
+  const reason = String((req.body && req.body.reason) || '').trim() || 'Removed from the pool';
+  await query("UPDATE credits SET status='void', void_reason=$1 WHERE id=$2", [reason, cr.id]);
+  if (cr.source_deal_id) await query("UPDATE deals SET closure_option='refund' WHERE id=$1 AND closure_option='transfer'", [cr.source_deal_id]);
+  await audit(cr.source_deal_id, req.user, 'balance_removed_from_pool', 'credit', cr.id, { reason });
+  res.json({ ok: true });
+}));
+// Use a pooled balance on another deal: deducted like a supplier discount; the
+// part passed on to the client (if any) is deducted from the client's invoice.
+app.post('/api/deals/:id/use-credit', requireAuth, requireRole('admin'), upload.single('client_file'), wrap(async (req, res) => {
+  const d = await getDeal(Number(req.params.id));
+  if (!d) return res.status(404).json({ error: 'Deal not found.' });
+  if (d.status !== 'active') return res.status(409).json({ error: 'A balance can only be used on an active deal.' });
+  const b = req.body || {};
+  const cr = (await query("SELECT * FROM credits WHERE id=$1 AND status='open'", [Number(b.credit_id)])).rows[0];
+  if (!cr) return res.status(404).json({ error: 'That balance is no longer available.' });
+  if (cr.source_deal_id === d.id) return res.status(400).json({ error: 'A balance cannot be used on the deal it came from.' });
+  const amount = num(b.amount), cAmt = num(b.client_amount || 0);
+  if (!(amount > 0)) return res.status(400).json({ error: 'Enter the amount to use.' });
+  if (cAmt < 0) return res.status(400).json({ error: 'The client amount cannot be negative.' });
+  if (!b.date) return res.status(400).json({ error: 'A date is required.' });
+  const remaining = finance.round2(Number(cr.amount) - await creditUsed(cr.id));
+  if (amount > remaining + eps) return res.status(400).json({ error: `Only ${remaining.toFixed(2)} of this balance is left.` });
+  const { computed } = await computeFor(d);
+  if (amount > computed.proformaNet + eps) return res.status(400).json({ error: `The amount cannot be more than what is still on this deal's proforma (${computed.proformaNet}).` });
+  if (cAmt > computed.invoiceNet + eps) return res.status(400).json({ error: `The client amount cannot be more than the remaining invoice (${computed.invoiceNet}).` });
+  const src = cr.source_deal_id ? await getDeal(cr.source_deal_id) : null;
+  const label = `Balance from ${src ? src.ref : 'pool'}`;
+  const id = (await query(
+    `INSERT INTO discounts (deal_id,date,supplier_amount,client_amount,supplier_ref,client_ref,notes,status,created_by,credit_id,kind)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'posted',$8,$9,'credit') RETURNING id`,
+    [d.id, b.date, amount, cAmt, label, b.client_ref ? String(b.client_ref).trim() : null, b.notes || null, req.user.id, cr.id])).rows[0].id;
+  if (req.file) await query(
+    `INSERT INTO documents (deal_id,category,original_name,mime,size,content,link_type,link_id,status,uploaded_by)
+     VALUES ($1,'Client discount documents',$2,$3,$4,$5,'discount_client',$6,'approved',$7)`,
+    [d.id, req.file.originalname, req.file.mimetype, req.file.size, req.file.buffer, id, req.user.id]);
+  await audit(d.id, req.user, 'use_balance', 'discount', id, { credit_id: cr.id, from: src ? src.ref : null, amount, client_amount: cAmt });
+  if (src) await audit(src.id, req.user, 'balance_used_elsewhere', 'credit', cr.id, { on: d.ref, amount });
+  if (cAmt > 0) await notify(['office'], d.id, 'Credit applied',
+    `${d.ref}: a credit of ${cAmt.toFixed(2)} ${d.currency}${src ? ` from ${src.ref}` : ''} was applied to your invoice.`, 'money', req.user.id);
+  res.json({ id, remaining: finance.round2(remaining - amount) });
 }));
 
 // ---------- notifications ----------
